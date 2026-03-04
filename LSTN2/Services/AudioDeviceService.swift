@@ -2,6 +2,9 @@ import AVFoundation
 import CoreAudio
 import AudioToolbox
 import Foundation
+import os.log
+
+private let log = Logger(subsystem: "com.lstn2.app", category: "AudioDevices")
 
 struct AudioDeviceService {
     struct DeviceLists {
@@ -12,6 +15,7 @@ struct AudioDeviceService {
     func loadDevices() -> DeviceLists {
         let mics = microphoneInputNames()
         let outputs = outputDeviceNames()
+        log.info("Audio devices loaded: \(mics.count) mics, \(outputs.count) outputs")
         return DeviceLists(microphoneInputs: mics, systemOutputs: outputs)
     }
 
@@ -35,6 +39,7 @@ struct AudioDeviceService {
 
         var dataSize: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr else {
+            log.error("Failed to get audio device data size")
             return []
         }
 
@@ -95,7 +100,7 @@ struct AudioDeviceService {
         let status = withUnsafeMutablePointer(to: &name) { pointer in
             AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, pointer)
         }
-        guard status == noErr, let cfName = name?.takeUnretainedValue() else { return nil }
+        guard status == noErr, let cfName = name?.takeRetainedValue() else { return nil }
 
         return cfName as String
     }

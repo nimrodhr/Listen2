@@ -9,8 +9,12 @@ struct ActivityLogView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header with export button
+            // Page title with export button
             HStack {
+                Label("Activity Log", systemImage: "list.bullet.rectangle")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+
                 Spacer()
 
                 if let exportMessage {
@@ -35,19 +39,16 @@ struct ActivityLogView: View {
                 .disabled(entries.isEmpty)
             }
             .padding(.horizontal, 4)
-            .padding(.vertical, 6)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
 
             if entries.isEmpty {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 1) {
                         ForEach(entries) { entry in
                             ActivityRow(entry: entry)
-                            if entry.id != entries.last?.id {
-                                Divider()
-                                    .padding(.leading, 24)
-                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -109,36 +110,76 @@ private struct ActivityRow: View {
     let entry: AppState.ActivityEntry
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
+        HStack(alignment: .top, spacing: 8) {
+            // Level indicator bar
+            RoundedRectangle(cornerRadius: 1)
                 .fill(levelColor)
-                .frame(width: 6, height: 6)
+                .frame(width: 2, height: 14)
+                .padding(.top, 2)
 
+            // Timestamp
             Text(entry.timestamp.formatted(date: .omitted, time: .standard))
-                .font(.caption.monospacedDigit())
+                .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
+                .frame(width: 52, alignment: .leading)
 
-            Text(entry.category)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            // Category tag
+            categoryTag
 
-            Text("·")
-                .foregroundStyle(.quaternary)
-
+            // Message
             Text(entry.message)
                 .font(.caption)
+                .foregroundStyle(.primary.opacity(0.8))
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 5)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(rowBackground)
+        )
+    }
+
+    private var categoryTag: some View {
+        Text(entry.category.uppercased())
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .foregroundStyle(categoryColor)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(categoryColor.opacity(0.12))
+            )
+    }
+
+    private var categoryColor: Color {
+        switch entry.category.lowercased() {
+        case "frontend":    .blue
+        case "backend":     .purple
+        case "recording":   .red
+        case "transcription", "transcript": .green
+        case "intelligence", "question":    .orange
+        case "knowledge", "kb":             .teal
+        case "audio":       .indigo
+        case "settings":    .gray
+        default:            .secondary
+        }
     }
 
     private var levelColor: Color {
         switch entry.level {
-        case .info: .blue.opacity(0.6)
+        case .info:    .blue.opacity(0.5)
         case .warning: .orange
-        case .error: .red
+        case .error:   .red
+        }
+    }
+
+    private var rowBackground: Color {
+        switch entry.level {
+        case .error:   .red.opacity(0.06)
+        case .warning: .orange.opacity(0.04)
+        case .info:    .clear
         }
     }
 }

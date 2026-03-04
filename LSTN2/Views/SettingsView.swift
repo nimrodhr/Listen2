@@ -25,6 +25,17 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Page title
+            HStack {
+                Label("Settings", systemImage: "gearshape")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
             ScrollView {
                 VStack(spacing: 0) {
                     openAISection

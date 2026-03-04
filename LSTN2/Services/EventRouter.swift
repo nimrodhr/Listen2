@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let log = Logger(subsystem: "com.lstn2.app", category: "EventRouter")
 
 @MainActor
 final class EventRouter {
@@ -10,11 +13,14 @@ final class EventRouter {
 
     func route(text: String) {
         guard let data = text.data(using: .utf8), let envelope = EventEnvelope(jsonData: data) else {
+            log.warning("Malformed event received: \(text.prefix(200))")
             state.logBackendEvent("malformed_event", detail: text, level: .warning)
             return
         }
 
-        state.logBackendEvent(envelope.event.rawValue)
+        if envelope.event != .pong {
+            state.logBackendEvent(envelope.event.rawValue)
+        }
 
         switch envelope.event {
         case .connected:
@@ -29,37 +35,58 @@ final class EventRouter {
         case .transcriptDelta:
             let speaker = (envelope.payload["speaker"] as? String) == "me" ? AppState.Speaker.me : AppState.Speaker.them
             let text = envelope.payload["delta_text"] as? String ?? ""
-            let elapsed = envelope.payload["timestamp"] as? TimeInterval ?? 0
-            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: false)
+            let rawTimestamp = envelope.payload["timestamp"] as? TimeInterval ?? 0
+            let elapsed = computeElapsed(rawTimestamp)
+            let turnId = envelope.payload["turn_id"] as? String
+            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: false, turnId: turnId)
 
         case .transcriptCompleted:
             let speaker = (envelope.payload["speaker"] as? String) == "me" ? AppState.Speaker.me : AppState.Speaker.them
             let text = envelope.payload["final_text"] as? String ?? ""
-            let elapsed = envelope.payload["timestamp"] as? TimeInterval ?? 0
-            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: true)
+            let rawTimestamp = envelope.payload["timestamp"] as? TimeInterval ?? 0
+            let elapsed = computeElapsed(rawTimestamp)
+            let turnId = envelope.payload["turn_id"] as? String
+            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: true, turnId: turnId)
 
         case .questionDetected:
+            let questionId = envelope.payload["question_id"] as? String
             let text = envelope.payload["question_text"] as? String ?? "Question"
             let categoryRaw = envelope.payload["category"] as? String ?? AppState.QuestionCategory.clarification.rawValue
             let category = AppState.QuestionCategory(rawValue: categoryRaw) ?? .clarification
-            state.appendQuestion(.init(question: text, elapsed: 0, category: category, state: .loading))
+            state.appendQuestion(.init(backendQuestionId: questionId, question: text, elapsed: 0, category: category, state: .loading))
 
         case .questionAnswered:
+            let questionId = envelope.payload["question_id"] as? String ?? ""
             let answer = envelope.payload["answer_text"] as? String ?? "Answer received"
+            var sources: [AppState.SourceBadge] = []
+            if let rawSources = envelope.payload["sources"] as? [[String: Any]] {
+                for raw in rawSources {
+                    let fileName = raw["file_name"] as? String ?? "Unknown"
+                    let page = raw["page"] as? Int
+                    let preview = raw["chunk_preview"] as? String ?? ""
+                    sources.append(AppState.SourceBadge(fileName: fileName, page: page, preview: preview))
+                }
+            }
+            state.updateQuestion(backendId: questionId, state: .answered(answer), sources: sources)
             let preview = String(answer.prefix(80))
             state.logBackendEvent("question.answered", detail: preview)
 
         case .questionNoAnswer:
+            let questionId = envelope.payload["question_id"] as? String ?? ""
             let reason = envelope.payload["reason"] as? String ?? "No answer found"
+            state.updateQuestion(backendId: questionId, state: .noAnswer(reason))
             state.logBackendEvent("question.no_answer", detail: reason, level: .warning)
 
         case .error:
             let message = envelope.payload["message"] as? String ?? "Unknown backend error"
+            let component = envelope.payload["component"] as? String ?? "unknown"
+            let errorCode = envelope.payload["error_code"] as? String ?? "UNKNOWN"
+            log.error("Backend error [\(component)] \(errorCode): \(message)")
             state.errorMessage = message
             state.logBackendEvent("error", detail: message, level: .error)
 
         case .kbIngestionProgress:
-            let fileName = envelope.payload["file_name"] as? String ?? "Unknown"
+            let fileName = envelope.payload["file"] as? String ?? envelope.payload["file_name"] as? String ?? "Unknown"
             let progress = envelope.payload["progress"] as? Double ?? 0.0
             state.updateIngestionProgress(fileName: fileName, progress: progress)
             state.logBackendEvent("kb.ingestion_progress", detail: "\(fileName): \(Int(progress * 100))%")
@@ -74,9 +101,9 @@ final class EventRouter {
             var sources: [AppState.KBSource] = []
             if let rawSources = envelope.payload["sources"] as? [[String: Any]] {
                 for raw in rawSources {
-                    let id = raw["id"] as? String ?? UUID().uuidString
+                    let id = raw["source_path"] as? String ?? raw["id"] as? String ?? UUID().uuidString
                     let name = raw["file_name"] as? String ?? "Unknown"
-                    let chunks = raw["chunk_count"] as? Int ?? 0
+                    let chunks = raw["chunks"] as? Int ?? raw["chunk_count"] as? Int ?? 0
                     sources.append(AppState.KBSource(id: id, fileName: name, chunkCount: chunks))
                 }
             }
@@ -119,12 +146,19 @@ final class EventRouter {
         case .settingsUpdated:
             state.logBackendEvent("settings_updated")
 
-        case .audioSetupStatus, .pong, .activityLog, .activityLogEntry,
+        case .pong:
+            break  // heartbeat — no activity log noise
+
+        case .audioSetupStatus, .activityLog, .activityLogEntry,
              .transcriptSessions, .transcriptSessionData:
             state.logBackendEvent(envelope.event.rawValue)
-
-        default:
-            break
         }
+    }
+
+    /// Convert a Unix timestamp from the backend into seconds elapsed since recording started.
+    private func computeElapsed(_ unixTimestamp: TimeInterval) -> TimeInterval {
+        guard let start = state.startDate else { return 0 }
+        let elapsed = unixTimestamp - start.timeIntervalSince1970
+        return max(elapsed, 0)
     }
 }

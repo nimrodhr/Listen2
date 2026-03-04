@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import os.log
+
+private let log = Logger(subsystem: "com.lstn2.app", category: "AppLifecycle")
 
 @main
 struct LSTN2App: App {
@@ -35,15 +38,26 @@ struct LSTN2App: App {
             Divider()
 
             Button(state.isRecording ? "Stop Recording" : "Start Recording") {
-                state.logFrontendEvent(state.isRecording ? "menubar.recording.stop" : "menubar.recording.start")
-                Task {
-                    let command: ClientCommand = state.isRecording
-                        ? .init(command: .stopRecording, payload: nil)
-                        : .init(command: .startRecording, payload: nil)
-                    do {
-                        try await webSocketClient.send(command)
-                    } catch {
-                        state.logFrontendEvent("menubar.recording.failed", detail: error.localizedDescription, level: .error)
+                if state.isRecording {
+                    state.logFrontendEvent("menubar.recording.stop")
+                    if state.connectionStatus == .connected {
+                        Task {
+                            do {
+                                try await webSocketClient.send(ClientCommand(command: .stopRecording, payload: nil))
+                            } catch {
+                                state.logFrontendEvent("menubar.recording.stop.failed", detail: error.localizedDescription, level: .error)
+                            }
+                        }
+                    }
+                    state.setRecording(false)
+                } else {
+                    state.logFrontendEvent("menubar.recording.start")
+                    Task {
+                        do {
+                            try await webSocketClient.send(ClientCommand(command: .startRecording, payload: nil))
+                        } catch {
+                            state.logFrontendEvent("menubar.recording.failed", detail: error.localizedDescription, level: .error)
+                        }
                     }
                 }
             }
@@ -55,6 +69,7 @@ struct LSTN2App: App {
             Divider()
 
             Button("Quit") {
+                log.info("User quit requested")
                 state.logFrontendEvent("menubar.quit")
                 pythonManager.stopBackend()
                 NSApplication.shared.terminate(nil)
@@ -68,16 +83,13 @@ struct LSTN2App: App {
     private func launchBackendIfNeeded() {
         do {
             try pythonManager.startBackend()
+            log.info("Backend process launched successfully")
             state.logFrontendEvent("backend.launched")
-
-            // Give the server a moment to start, then connect
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                await MainActor.run {
-                    connectBackend()
-                }
-            }
+            // Connection is handled by ContentView.onAppear → connectIfNeeded().
+            // The WebSocketClient auto-reconnect will keep retrying until the
+            // backend is ready, so no delayed connect call is needed here.
         } catch {
+            log.error("Backend launch failed: \(error.localizedDescription)")
             state.logFrontendEvent("backend.launch.failed", detail: error.localizedDescription, level: .error)
             state.errorMessage = "Failed to start backend: \(error.localizedDescription)"
         }
@@ -97,16 +109,19 @@ struct LSTN2App: App {
     }
 
     private func connectBackend() {
-        guard state.connectionStatus != .connected else {
-            state.logFrontendEvent("menubar.connect.skipped", detail: "already connected")
+        guard state.connectionStatus != .connected && state.connectionStatus != .connecting else {
+            log.debug("Connect skipped: already \(state.connectionStatus.rawValue)")
+            state.logFrontendEvent("menubar.connect.skipped", detail: "already \(state.connectionStatus.rawValue)")
             return
         }
 
         guard let url = URL(string: "ws://127.0.0.1:8765") else {
+            log.error("Invalid WebSocket URL")
             state.logFrontendEvent("menubar.connect.failed", detail: "invalid websocket url", level: .error)
             return
         }
 
+        log.info("Connecting to backend at \(url.absoluteString)")
         state.connectionStatus = .connecting
         webSocketClient.connect(url: url, apiKey: state.settings.apiKey)
         state.logFrontendEvent("menubar.connect.requested", detail: url.absoluteString)

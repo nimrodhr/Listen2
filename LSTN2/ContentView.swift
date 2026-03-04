@@ -98,6 +98,13 @@ struct ContentView: View {
                         // Fetch device list and sync settings on connect
                         try? await webSocketClient.send(ClientCommand(command: .getAudioDevices, payload: nil))
                         try? await webSocketClient.send(ClientCommand(command: .updateSettings, payload: state.settingsPayload()))
+                    } else {
+                        // Reset recording state when connection drops — the backend
+                        // recording is gone so the frontend must not stay stuck.
+                        if state.isRecording {
+                            state.setRecording(false)
+                            state.logFrontendEvent("recording.reset_on_disconnect", level: .warning)
+                        }
                     }
                 }
             }
@@ -214,35 +221,46 @@ struct ContentView: View {
 
     private var recordButton: some View {
         Button {
-            // Validate API key before starting (not needed for stopping)
-            if !state.isRecording && state.settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // --- Stopping: always allowed, even if disconnected ---
+            if state.isRecording {
+                state.logFrontendEvent("recording.stop.requested")
+                if state.connectionStatus == .connected {
+                    Task {
+                        do {
+                            try await webSocketClient.send(ClientCommand(command: .stopRecording, payload: nil))
+                        } catch {
+                            state.logFrontendEvent("recording.stop.send_failed", detail: error.localizedDescription, level: .error)
+                        }
+                    }
+                }
+                // Always reset the frontend state so the user is never stuck
+                state.setRecording(false)
+                return
+            }
+
+            // --- Starting: requires API key + backend connection ---
+            if state.settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 state.errorMessage = "API key is required. Go to Settings and enter your OpenAI API key before recording."
                 state.logFrontendEvent("recording.blocked", detail: "no api key", level: .warning)
                 return
             }
 
-            // Must be connected to send commands
             if state.connectionStatus != .connected {
                 state.errorMessage = "Not connected to backend. Check that the backend server is running."
                 state.logFrontendEvent("recording.blocked", detail: "not connected", level: .warning)
                 return
             }
 
-            state.logFrontendEvent(state.isRecording ? "recording.stop.requested" : "recording.start.requested")
+            state.logFrontendEvent("recording.start.requested")
             Task {
-                let command: ClientCommand
-                if state.isRecording {
-                    command = .init(command: .stopRecording, payload: nil)
-                } else {
-                    var payload: [String: Any] = [:]
-                    if let micID = state.settings.micDeviceID {
-                        payload["mic_device_id"] = micID
-                    }
-                    if let sysID = state.settings.systemDeviceID {
-                        payload["system_device_id"] = sysID
-                    }
-                    command = .init(command: .startRecording, payload: payload.isEmpty ? nil : payload)
+                var payload: [String: Any] = [:]
+                if let micID = state.settings.micDeviceID {
+                    payload["mic_device_id"] = micID
                 }
+                if let sysID = state.settings.systemDeviceID {
+                    payload["system_device_id"] = sysID
+                }
+                let command = ClientCommand(command: .startRecording, payload: payload.isEmpty ? nil : payload)
                 do {
                     try await webSocketClient.send(command)
                 } catch {
@@ -322,8 +340,8 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func connectIfNeeded(reason: String) {
-        guard state.connectionStatus != .connected else {
-            state.logFrontendEvent("connect.skipped", detail: "already connected")
+        guard state.connectionStatus != .connected && state.connectionStatus != .connecting else {
+            state.logFrontendEvent("connect.skipped", detail: "already \(state.connectionStatus)")
             return
         }
 
@@ -398,8 +416,25 @@ private struct LiveWorkspaceView: View {
     let state: AppState
 
     var body: some View {
-        VSplitView {
-            TranscriptView(entries: state.transcript, hiddenCount: state.hiddenTranscriptCount) {
+        VStack(spacing: 0) {
+            // Page title
+            HStack {
+                Label("Live", systemImage: "waveform")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            VSplitView {
+                TranscriptView(
+                entries: state.transcript,
+                hiddenCount: state.hiddenTranscriptCount,
+                isRecording: state.isRecording,
+                recordingStartDate: state.startDate
+            ) {
                 state.clearTranscript()
                 state.logFrontendEvent("transcript.cleared")
             }
@@ -409,7 +444,8 @@ private struct LiveWorkspaceView: View {
                 state.dismissQuestion(id: id)
                 state.logFrontendEvent("question.dismissed", detail: id.uuidString)
             }
-            .frame(minHeight: 140)
+                .frame(minHeight: 140)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 8)

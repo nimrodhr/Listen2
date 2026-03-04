@@ -1,5 +1,8 @@
 import Foundation
 import Observation
+import os.log
+
+private let log = Logger(subsystem: "com.lstn2.app", category: "AppState")
 
 @MainActor
 @Observable
@@ -28,13 +31,15 @@ final class AppState {
         var text: String
         let elapsed: TimeInterval
         var isFinal: Bool
+        let turnId: String?
 
-        init(id: UUID = UUID(), speaker: Speaker, text: String, elapsed: TimeInterval, isFinal: Bool) {
+        init(id: UUID = UUID(), speaker: Speaker, text: String, elapsed: TimeInterval, isFinal: Bool, turnId: String? = nil) {
             self.id = id
             self.speaker = speaker
             self.text = text
             self.elapsed = elapsed
             self.isFinal = isFinal
+            self.turnId = turnId
         }
     }
 
@@ -60,6 +65,7 @@ final class AppState {
         }
 
         let id: UUID
+        let backendQuestionId: String?
         let question: String
         let elapsed: TimeInterval
         let category: QuestionCategory
@@ -68,6 +74,7 @@ final class AppState {
 
         init(
             id: UUID = UUID(),
+            backendQuestionId: String? = nil,
             question: String,
             elapsed: TimeInterval,
             category: QuestionCategory,
@@ -75,6 +82,7 @@ final class AppState {
             sources: [SourceBadge] = []
         ) {
             self.id = id
+            self.backendQuestionId = backendQuestionId
             self.question = question
             self.elapsed = elapsed
             self.category = category
@@ -148,6 +156,30 @@ final class AppState {
         var systemDeviceID: Int? = nil
         var transcriptionModel: String = "gpt-4o-transcribe"
         var qaModel: String = "gpt-4o-mini"
+
+        /// Load settings from the shared settings.json (same file the backend uses).
+        static func loadFromDisk() -> Settings {
+            let path = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".listen/settings.json")
+            guard let data = try? Data(contentsOf: path),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return Settings() }
+
+            var s = Settings()
+            if let keys = json["api_keys"] as? [String: Any],
+               let key = keys["openai"] as? String {
+                s.apiKey = key
+            }
+            if let audio = json["audio"] as? [String: Any] {
+                s.micDeviceID = audio["mic_device_id"] as? Int
+                s.systemDeviceID = audio["system_device_id"] as? Int
+            }
+            if let models = json["models"] as? [String: Any] {
+                if let t = models["transcription"] as? String { s.transcriptionModel = t }
+                if let q = models["question_detection"] as? String { s.qaModel = q }
+            }
+            return s
+        }
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -160,7 +192,7 @@ final class AppState {
     var questions: [QuestionCard] = []
     var activity: [ActivityEntry] = []
 
-    var settings = Settings()
+    var settings = Settings.loadFromDisk()
     var availableMicDevices: [AudioDevice] = []
     var availableSystemDevices: [AudioDevice] = []
     var isWindowVisible = true
@@ -181,8 +213,15 @@ final class AppState {
         }
     }
 
-    func appendTranscript(speaker: Speaker, text: String, elapsed: TimeInterval, isFinal: Bool) {
-        let newEntry = TranscriptEntry(speaker: speaker, text: text, elapsed: elapsed, isFinal: isFinal)
+    func appendTranscript(speaker: Speaker, text: String, elapsed: TimeInterval, isFinal: Bool, turnId: String? = nil) {
+        // If we have a turnId, update existing entry instead of creating duplicate
+        if let turnId, let index = transcript.lastIndex(where: { $0.turnId == turnId }) {
+            transcript[index].text = text
+            transcript[index].isFinal = isFinal
+            return
+        }
+
+        let newEntry = TranscriptEntry(speaker: speaker, text: text, elapsed: elapsed, isFinal: isFinal, turnId: turnId)
         transcript.append(newEntry)
 
         if transcript.count > 200 {
@@ -207,6 +246,12 @@ final class AppState {
         questions[index].sources = sources
     }
 
+    func updateQuestion(backendId: String, state: QuestionCard.State, sources: [SourceBadge] = []) {
+        guard let index = questions.firstIndex(where: { $0.backendQuestionId == backendId }) else { return }
+        questions[index].state = state
+        questions[index].sources = sources
+    }
+
     func dismissQuestion(id: UUID) {
         questions.removeAll(where: { $0.id == id })
     }
@@ -220,11 +265,21 @@ final class AppState {
 
     func logFrontendEvent(_ event: String, detail: String? = nil, level: ActivityEntry.Level = .info) {
         let message = detail.map { "\(event): \($0)" } ?? event
+        switch level {
+        case .info: log.info("[frontend] \(message)")
+        case .warning: log.warning("[frontend] \(message)")
+        case .error: log.error("[frontend] \(message)")
+        }
         appendActivity(category: "frontend", level: level, message: message)
     }
 
     func logBackendEvent(_ event: String, detail: String? = nil, level: ActivityEntry.Level = .info) {
         let message = detail.map { "\(event): \($0)" } ?? event
+        switch level {
+        case .info: log.info("[backend] \(message)")
+        case .warning: log.warning("[backend] \(message)")
+        case .error: log.error("[backend] \(message)")
+        }
         appendActivity(category: "backend", level: level, message: message)
     }
 
@@ -257,21 +312,25 @@ final class AppState {
     }
 
     /// Builds the settings dict for the backend `update_settings` command.
+    /// Skips sending an empty API key to avoid wiping the backend's stored key.
     func settingsPayload() -> [String: Any] {
-        return [
-            "settings": [
-                "api_keys": ["openai": settings.apiKey],
-                "models": [
-                    "transcription": settings.transcriptionModel,
-                    "question_detection": settings.qaModel,
-                    "rag_answer": settings.qaModel,
-                ],
-                "audio": [
-                    "mic_device_id": settings.micDeviceID as Any,
-                    "system_device_id": settings.systemDeviceID as Any,
-                ],
-            ] as [String: Any]
+        var inner: [String: Any] = [
+            "models": [
+                "transcription": settings.transcriptionModel,
+                "question_detection": settings.qaModel,
+                "rag_answer": settings.qaModel,
+            ],
+            "audio": [
+                "mic_device_id": settings.micDeviceID as Any,
+                "system_device_id": settings.systemDeviceID as Any,
+            ],
         ]
+        // Only send API key if the frontend actually has one
+        let trimmedKey = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedKey.isEmpty {
+            inner["api_keys"] = ["openai": trimmedKey]
+        }
+        return ["settings": inner]
     }
 
     // MARK: - Knowledge Base Methods

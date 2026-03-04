@@ -9,6 +9,17 @@ struct KnowledgeBaseView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Page title
+            HStack {
+                Label("Knowledge Base", systemImage: "books.vertical")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
             ScrollView {
                 VStack(spacing: 0) {
                     statusSection
@@ -275,7 +286,7 @@ struct KnowledgeBaseView: View {
         Task {
             do {
                 try await webSocketClient.send(
-                    ClientCommand(command: .removeKBSource, payload: ["source_id": id])
+                    ClientCommand(command: .removeKBSource, payload: ["source_path": id])
                 )
                 state.removeKBSource(id: id)
                 state.logFrontendEvent("kb.source.removed", detail: id)
