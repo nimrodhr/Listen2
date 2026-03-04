@@ -316,9 +316,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-            }
-
-            if activePanel == .knowledgeBase {
+            } else if activePanel == .knowledgeBase {
                 Button {
                     state.kbIsLoading = true
                     Task {
@@ -335,6 +333,30 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+            } else if activePanel == .live {
+                HStack(spacing: 12) {
+                    if !state.transcript.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "text.quote")
+                                .font(.system(size: 9))
+                            Text("\(state.transcript.count)")
+                                .font(.caption.monospacedDigit())
+                        }
+                        .foregroundStyle(.tertiary)
+                        .help("\(state.transcript.count) transcript entries")
+                    }
+
+                    if !state.questions.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "questionmark.bubble")
+                                .font(.system(size: 9))
+                            Text("\(state.questions.count)")
+                                .font(.caption.monospacedDigit())
+                        }
+                        .foregroundStyle(.tertiary)
+                        .help("\(state.questions.count) questions detected")
+                    }
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -435,15 +457,13 @@ private struct LiveWorkspaceView: View {
 
             VSplitView {
                 TranscriptView(
-                entries: state.transcript,
-                hiddenCount: state.hiddenTranscriptCount,
-                isRecording: state.isRecording,
-                recordingStartDate: state.startDate
-            ) {
-                state.clearTranscript()
-                state.logFrontendEvent("transcript.cleared")
-            }
-            .frame(minHeight: 180)
+                    entries: state.transcript,
+                    hiddenCount: state.hiddenTranscriptCount
+                ) {
+                    state.clearTranscript()
+                    state.logFrontendEvent("transcript.cleared")
+                }
+                .frame(minHeight: 180)
 
             QuestionListView(questions: state.questions) { id in
                 state.dismissQuestion(id: id)

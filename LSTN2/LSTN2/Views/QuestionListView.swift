@@ -107,9 +107,13 @@ struct QuestionListView: View {
         }
         let csv = ([header] + rows).joined(separator: "\n")
 
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HHmm"
+        let timestamp = formatter.string(from: Date())
+
         let panel = NSSavePanel()
         panel.title = "Export Q&A"
-        panel.nameFieldStringValue = "questions.csv"
+        panel.nameFieldStringValue = "questions_\(timestamp).csv"
         panel.allowedContentTypes = [UTType.commaSeparatedText]
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }

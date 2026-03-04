@@ -3,8 +3,6 @@ import SwiftUI
 struct TranscriptView: View {
     let entries: [AppState.TranscriptEntry]
     let hiddenCount: Int
-    let isRecording: Bool
-    let recordingStartDate: Date?
     let onClear: () -> Void
 
     var body: some View {
@@ -16,11 +14,6 @@ struct TranscriptView: View {
                     .foregroundStyle(.secondary)
 
                 Spacer()
-
-                // Recording duration timer
-                if isRecording, let start = recordingStartDate {
-                    TranscriptTimer(startDate: start)
-                }
 
                 if !entries.isEmpty {
                     Button {
@@ -95,43 +88,6 @@ struct TranscriptView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
-    }
-}
-
-// MARK: - Recording Timer in Transcript Header
-
-private struct TranscriptTimer: View {
-    let startDate: Date
-
-    @State private var elapsed: TimeInterval = 0
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(Color.red)
-                .frame(width: 5, height: 5)
-            Text(formatted)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.red.opacity(0.8))
-        }
-        .task {
-            elapsed = Date().timeIntervalSince(startDate)
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                elapsed = Date().timeIntervalSince(startDate)
-            }
-        }
-    }
-
-    private var formatted: String {
-        let total = Int(elapsed)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
-        }
-        return String(format: "%02d:%02d", m, s)
     }
 }
 
