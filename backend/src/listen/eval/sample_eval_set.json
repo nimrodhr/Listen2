@@ -1,0 +1,20 @@
+[
+  {
+    "question": "What is the candidate's most recent job title?",
+    "expected_answer": "",
+    "expected_sources": ["resume.pdf"],
+    "expected_chunks": ["Senior", "Engineer"]
+  },
+  {
+    "question": "What programming languages does the candidate know?",
+    "expected_answer": "",
+    "expected_sources": ["resume.pdf"],
+    "expected_chunks": ["Python", "JavaScript"]
+  },
+  {
+    "question": "What is the company's remote work policy?",
+    "expected_answer": "",
+    "expected_sources": ["company_handbook.pdf"],
+    "expected_chunks": ["remote", "hybrid"]
+  }
+]

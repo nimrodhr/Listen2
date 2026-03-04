@@ -1,0 +1,52 @@
+[
+  {
+    "description": "Clean speech - simple statement",
+    "reference": "We need to schedule a meeting with the engineering team next Tuesday at three o'clock.",
+    "hypothesis": "We need to schedule a meeting with the engineering team next Tuesday at three o'clock."
+  },
+  {
+    "description": "Technical terms - software development",
+    "reference": "The API endpoint returns a JSON response with the authentication token.",
+    "hypothesis": "The API endpoint returns a JSON response with the authentication token."
+  },
+  {
+    "description": "Numbers and dates",
+    "reference": "Revenue increased by 15 percent in Q3 2025, reaching 4.2 million dollars.",
+    "hypothesis": "Revenue increased by 15% in Q3 2025, reaching 4.2 million dollars."
+  },
+  {
+    "description": "Common ASR substitution errors",
+    "reference": "Let's discuss the project timeline and the deliverables for this quarter.",
+    "hypothesis": "Let's discuss the project time line and the deliver balls for this quarter."
+  },
+  {
+    "description": "Proper nouns and company names",
+    "reference": "We're integrating with Salesforce and using the OpenAI API for our chatbot.",
+    "hypothesis": "We're integrating with sales force and using the open AI API for our chat bot."
+  },
+  {
+    "description": "Filler words and natural speech",
+    "reference": "I think we should probably consider moving the deadline to next Friday.",
+    "hypothesis": "I think um we should probably uh consider moving the deadline to um next Friday."
+  },
+  {
+    "description": "Crosstalk and partial words",
+    "reference": "The customer feedback indicates we need to improve the onboarding experience.",
+    "hypothesis": "The customer feedback indicates we need to improve the on boarding experience."
+  },
+  {
+    "description": "Acronyms and abbreviations",
+    "reference": "The CTO wants us to focus on the MVP before the EOD Friday.",
+    "hypothesis": "The CTO wants us to focus on the MVP before the EOD Friday."
+  },
+  {
+    "description": "Long compound sentence",
+    "reference": "Based on the data from last month's user testing sessions, we've identified three critical issues that are causing a 20 percent drop in user retention.",
+    "hypothesis": "Based on the data from last month's user testing sessions, we've identified three critical issues that are causing a 20% drop in user retention."
+  },
+  {
+    "description": "Domain-specific terminology",
+    "reference": "The Kubernetes cluster needs more pods allocated for the microservices deployment.",
+    "hypothesis": "The Kubernetes cluster needs more pods allocated for the micro services deployment."
+  }
+]
