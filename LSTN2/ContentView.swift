@@ -10,8 +10,6 @@ struct ContentView: View {
 
     @State private var activePanel: Panel = .live
 
-    private let audioDeviceService = AudioDeviceService()
-
     let state: AppState
     let webSocketClient: WebSocketClient
     let eventRouter: EventRouter
@@ -56,6 +54,9 @@ struct ContentView: View {
                             detail: apiKeyChanged ? "api_key updated" : "api_key unchanged"
                         )
 
+                        // Sync settings to backend
+                        syncSettingsToBackend()
+
                         // Auto-reconnect when API key changes
                         if apiKeyChanged && !saved.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             connectIfNeeded(reason: "api_key_changed")
@@ -92,6 +93,12 @@ struct ContentView: View {
                 Task { @MainActor in
                     state.connectionStatus = isConnected ? .connected : .disconnected
                     state.logFrontendEvent("websocket.connection_changed", detail: isConnected ? "connected" : "disconnected")
+
+                    if isConnected {
+                        // Fetch device list and sync settings on connect
+                        try? await webSocketClient.send(ClientCommand(command: .getAudioDevices, payload: nil))
+                        try? await webSocketClient.send(ClientCommand(command: .updateSettings, payload: state.settingsPayload()))
+                    }
                 }
             }
 
@@ -223,9 +230,19 @@ struct ContentView: View {
 
             state.logFrontendEvent(state.isRecording ? "recording.stop.requested" : "recording.start.requested")
             Task {
-                let command: ClientCommand = state.isRecording
-                    ? .init(command: .stopRecording, payload: nil)
-                    : .init(command: .startRecording, payload: nil)
+                let command: ClientCommand
+                if state.isRecording {
+                    command = .init(command: .stopRecording, payload: nil)
+                } else {
+                    var payload: [String: Any] = [:]
+                    if let micID = state.settings.micDeviceID {
+                        payload["mic_device_id"] = micID
+                    }
+                    if let sysID = state.settings.systemDeviceID {
+                        payload["system_device_id"] = sysID
+                    }
+                    command = .init(command: .startRecording, payload: payload.isEmpty ? nil : payload)
+                }
                 do {
                     try await webSocketClient.send(command)
                 } catch {
@@ -266,7 +283,6 @@ struct ContentView: View {
             if activePanel == .settings {
                 Button {
                     refreshAudioDevices()
-                    state.logFrontendEvent("audio_devices.refresh.requested")
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.clockwise")
@@ -325,12 +341,19 @@ struct ContentView: View {
     }
 
     private func refreshAudioDevices() {
-        let devices = audioDeviceService.loadDevices()
-        state.updateAvailableDevices(mics: devices.microphoneInputs, system: devices.systemOutputs)
-        state.logFrontendEvent(
-            "audio_devices.updated",
-            detail: "mics=\(devices.microphoneInputs.count), outputs=\(devices.systemOutputs.count)"
-        )
+        guard state.connectionStatus == .connected else { return }
+        Task {
+            try? await webSocketClient.send(ClientCommand(command: .getAudioDevices, payload: nil))
+        }
+        state.logFrontendEvent("audio_devices.refresh.requested")
+    }
+
+    private func syncSettingsToBackend() {
+        guard state.connectionStatus == .connected else { return }
+        Task {
+            try? await webSocketClient.send(ClientCommand(command: .updateSettings, payload: state.settingsPayload()))
+        }
+        state.logFrontendEvent("settings.synced_to_backend")
     }
 }
 

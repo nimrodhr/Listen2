@@ -130,10 +130,22 @@ final class AppState {
         var lastUpdated: Date? = nil
     }
 
+    struct AudioDevice: Identifiable, Hashable {
+        let id: Int
+        let name: String
+        let isBlackHole: Bool
+
+        init(id: Int, name: String, isBlackHole: Bool = false) {
+            self.id = id
+            self.name = name
+            self.isBlackHole = isBlackHole
+        }
+    }
+
     struct Settings: Hashable {
         var apiKey: String = ""
-        var micDevice: String = "Default Microphone"
-        var systemDevice: String = "BlackHole 2ch"
+        var micDeviceID: Int? = nil
+        var systemDeviceID: Int? = nil
         var transcriptionModel: String = "gpt-4o-transcribe"
         var qaModel: String = "gpt-4o-mini"
     }
@@ -149,8 +161,8 @@ final class AppState {
     var activity: [ActivityEntry] = []
 
     var settings = Settings()
-    var availableMicDevices: [String] = []
-    var availableSystemDevices: [String] = []
+    var availableMicDevices: [AudioDevice] = []
+    var availableSystemDevices: [AudioDevice] = []
     var isWindowVisible = true
 
     var errorMessage: String?
@@ -216,17 +228,50 @@ final class AppState {
         appendActivity(category: "backend", level: level, message: message)
     }
 
-    func updateAvailableDevices(mics: [String], system: [String]) {
+    func updateAvailableDevices(mics: [AudioDevice], system: [AudioDevice]) {
         availableMicDevices = mics
         availableSystemDevices = system
 
-        if let firstMic = mics.first, !mics.contains(settings.micDevice) {
-            settings.micDevice = firstMic
+        // Auto-select first device if current selection is invalid
+        if let currentMic = settings.micDeviceID, !mics.contains(where: { $0.id == currentMic }) {
+            settings.micDeviceID = mics.first?.id
+        } else if settings.micDeviceID == nil {
+            settings.micDeviceID = mics.first?.id
         }
 
-        if let firstSystem = system.first, !system.contains(settings.systemDevice) {
-            settings.systemDevice = firstSystem
+        if let currentSys = settings.systemDeviceID, !system.contains(where: { $0.id == currentSys }) {
+            settings.systemDeviceID = system.first?.id
+        } else if settings.systemDeviceID == nil {
+            settings.systemDeviceID = system.first?.id
         }
+    }
+
+    func micDeviceName(for id: Int?) -> String {
+        guard let id else { return "Not selected" }
+        return availableMicDevices.first(where: { $0.id == id })?.name ?? "Device \(id)"
+    }
+
+    func systemDeviceName(for id: Int?) -> String {
+        guard let id else { return "Not selected" }
+        return availableSystemDevices.first(where: { $0.id == id })?.name ?? "Device \(id)"
+    }
+
+    /// Builds the settings dict for the backend `update_settings` command.
+    func settingsPayload() -> [String: Any] {
+        return [
+            "settings": [
+                "api_keys": ["openai": settings.apiKey],
+                "models": [
+                    "transcription": settings.transcriptionModel,
+                    "question_detection": settings.qaModel,
+                    "rag_answer": settings.qaModel,
+                ],
+                "audio": [
+                    "mic_device_id": settings.micDeviceID as Any,
+                    "system_device_id": settings.systemDeviceID as Any,
+                ],
+            ] as [String: Any]
+        ]
     }
 
     // MARK: - Knowledge Base Methods

@@ -26,22 +26,26 @@ final class EventRouter {
             state.setRecording(active)
             state.logBackendEvent("recording_state", detail: active ? "recording=true" : "recording=false")
 
-        case .transcriptDelta, .transcriptCompleted:
+        case .transcriptDelta:
             let speaker = (envelope.payload["speaker"] as? String) == "me" ? AppState.Speaker.me : AppState.Speaker.them
-            let text = envelope.payload["text"] as? String ?? ""
-            let elapsed = envelope.payload["elapsed"] as? TimeInterval ?? 0
-            let isFinal = envelope.event == .transcriptCompleted
-            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: isFinal)
+            let text = envelope.payload["delta_text"] as? String ?? ""
+            let elapsed = envelope.payload["timestamp"] as? TimeInterval ?? 0
+            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: false)
+
+        case .transcriptCompleted:
+            let speaker = (envelope.payload["speaker"] as? String) == "me" ? AppState.Speaker.me : AppState.Speaker.them
+            let text = envelope.payload["final_text"] as? String ?? ""
+            let elapsed = envelope.payload["timestamp"] as? TimeInterval ?? 0
+            state.appendTranscript(speaker: speaker, text: text, elapsed: elapsed, isFinal: true)
 
         case .questionDetected:
-            let text = envelope.payload["question"] as? String ?? "Question"
-            let elapsed = envelope.payload["elapsed"] as? TimeInterval ?? 0
+            let text = envelope.payload["question_text"] as? String ?? "Question"
             let categoryRaw = envelope.payload["category"] as? String ?? AppState.QuestionCategory.clarification.rawValue
             let category = AppState.QuestionCategory(rawValue: categoryRaw) ?? .clarification
-            state.appendQuestion(.init(question: text, elapsed: elapsed, category: category, state: .loading))
+            state.appendQuestion(.init(question: text, elapsed: 0, category: category, state: .loading))
 
         case .questionAnswered:
-            let answer = envelope.payload["answer"] as? String ?? "Answer received"
+            let answer = envelope.payload["answer_text"] as? String ?? "Answer received"
             let preview = String(answer.prefix(80))
             state.logBackendEvent("question.answered", detail: preview)
 
@@ -89,6 +93,35 @@ final class EventRouter {
 
         case .kbQueryResults:
             state.logBackendEvent("kb.query_results")
+
+        case .audioDevices:
+            var mics: [AppState.AudioDevice] = []
+            var outputs: [AppState.AudioDevice] = []
+
+            if let rawInputs = envelope.payload["input_devices"] as? [[String: Any]] {
+                for raw in rawInputs {
+                    guard let id = raw["id"] as? Int, let name = raw["name"] as? String else { continue }
+                    let isBH = raw["is_blackhole"] as? Bool ?? false
+                    mics.append(AppState.AudioDevice(id: id, name: name, isBlackHole: isBH))
+                }
+            }
+
+            if let rawOutputs = envelope.payload["output_devices"] as? [[String: Any]] {
+                for raw in rawOutputs {
+                    guard let id = raw["id"] as? Int, let name = raw["name"] as? String else { continue }
+                    outputs.append(AppState.AudioDevice(id: id, name: name))
+                }
+            }
+
+            state.updateAvailableDevices(mics: mics, system: outputs)
+            state.logBackendEvent("audio_devices", detail: "mics=\(mics.count), outputs=\(outputs.count)")
+
+        case .settingsUpdated:
+            state.logBackendEvent("settings_updated")
+
+        case .audioSetupStatus, .pong, .activityLog, .activityLogEntry,
+             .transcriptSessions, .transcriptSessionData:
+            state.logBackendEvent(envelope.event.rawValue)
 
         default:
             break

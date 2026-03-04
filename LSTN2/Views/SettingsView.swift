@@ -2,8 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var settings: AppState.Settings
-    let micDevices: [String]
-    let systemDevices: [String]
+    let micDevices: [AppState.AudioDevice]
+    let systemDevices: [AppState.AudioDevice]
     let onSave: (AppState.Settings) -> Void
 
     @State private var draft: AppState.Settings
@@ -12,8 +12,8 @@ struct SettingsView: View {
 
     init(
         settings: Binding<AppState.Settings>,
-        micDevices: [String],
-        systemDevices: [String],
+        micDevices: [AppState.AudioDevice],
+        systemDevices: [AppState.AudioDevice],
         onSave: @escaping (AppState.Settings) -> Void
     ) {
         _settings = settings
@@ -39,12 +39,20 @@ struct SettingsView: View {
             draft = newValue
         }
         .onChange(of: micDevices) { _, newValue in
-            guard !newValue.isEmpty, !newValue.contains(draft.micDevice) else { return }
-            draft.micDevice = newValue[0]
+            guard !newValue.isEmpty else { return }
+            if let currentID = draft.micDeviceID, !newValue.contains(where: { $0.id == currentID }) {
+                draft.micDeviceID = newValue.first?.id
+            } else if draft.micDeviceID == nil {
+                draft.micDeviceID = newValue.first?.id
+            }
         }
         .onChange(of: systemDevices) { _, newValue in
-            guard !newValue.isEmpty, !newValue.contains(draft.systemDevice) else { return }
-            draft.systemDevice = newValue[0]
+            guard !newValue.isEmpty else { return }
+            if let currentID = draft.systemDeviceID, !newValue.contains(where: { $0.id == currentID }) {
+                draft.systemDeviceID = newValue.first?.id
+            } else if draft.systemDeviceID == nil {
+                draft.systemDeviceID = newValue.first?.id
+            }
         }
     }
 
@@ -141,12 +149,12 @@ struct SettingsView: View {
 
     private var micRow: some View {
         SettingsRow("Microphone") {
-            Picker("", selection: $draft.micDevice) {
+            Picker("", selection: $draft.micDeviceID) {
                 if micDevices.isEmpty {
-                    Text("No input devices").tag("")
+                    Text("No input devices").tag(nil as Int?)
                 } else {
-                    ForEach(micDevices, id: \.self) { name in
-                        Text(name).tag(name)
+                    ForEach(micDevices) { device in
+                        Text(device.name).tag(device.id as Int?)
                     }
                 }
             }
@@ -156,12 +164,12 @@ struct SettingsView: View {
 
     private var loopbackRow: some View {
         SettingsRow("Loopback") {
-            Picker("", selection: $draft.systemDevice) {
+            Picker("", selection: $draft.systemDeviceID) {
                 if systemDevices.isEmpty {
-                    Text("No output devices").tag("")
+                    Text("No output devices").tag(nil as Int?)
                 } else {
-                    ForEach(systemDevices, id: \.self) { name in
-                        Text(name).tag(name)
+                    ForEach(systemDevices) { device in
+                        Text(device.name).tag(device.id as Int?)
                     }
                 }
             }

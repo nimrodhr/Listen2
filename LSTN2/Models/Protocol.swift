@@ -19,12 +19,12 @@ enum CommandName: String, Codable {
 
 struct ClientCommand {
     let command: CommandName
-    let payload: [String: String]?
+    let payload: [String: Any]?
 
     /// Serializes to the format the Python backend expects:
     /// `{"type": "command.<name>", ...payload_fields}`
     func toJSON() throws -> Data {
-        var dict: [String: String] = ["type": "command.\(command.rawValue)"]
+        var dict: [String: Any] = ["type": "command.\(command.rawValue)"]
         if let payload {
             for (key, value) in payload {
                 dict[key] = value
