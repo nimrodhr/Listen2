@@ -18,7 +18,10 @@ final class EventRouter {
             return
         }
 
-        if envelope.event != .pong {
+        // Only log non-noisy events; transcript deltas/completions are too frequent.
+        if envelope.event != .pong
+            && envelope.event != .transcriptDelta
+            && envelope.event != .transcriptCompleted {
             state.logBackendEvent(envelope.event.rawValue)
         }
 

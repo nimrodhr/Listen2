@@ -44,24 +44,29 @@ struct ContentView: View {
                             set: { state.settings = $0 }
                         ),
                         micDevices: state.availableMicDevices,
-                        systemDevices: state.availableSystemDevices
-                    ) { saved in
-                        let oldKey = state.settings.apiKey
-                        state.settings = saved
-                        let apiKeyChanged = oldKey != saved.apiKey
-                        state.logFrontendEvent(
-                            "settings.saved",
-                            detail: apiKeyChanged ? "api_key updated" : "api_key unchanged"
-                        )
+                        systemDevices: state.availableSystemDevices,
+                        connectionStatus: state.connectionStatus,
+                        onSave: { saved in
+                            let oldKey = state.settings.apiKey
+                            state.settings = saved
+                            let apiKeyChanged = oldKey != saved.apiKey
+                            state.logFrontendEvent(
+                                "settings.saved",
+                                detail: apiKeyChanged ? "api_key updated" : "api_key unchanged"
+                            )
 
-                        // Sync settings to backend
-                        syncSettingsToBackend()
+                            // Sync settings to backend
+                            syncSettingsToBackend()
 
-                        // Auto-reconnect when API key changes
-                        if apiKeyChanged && !saved.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            connectIfNeeded(reason: "api_key_changed")
+                            // Auto-reconnect when API key changes
+                            if apiKeyChanged && !saved.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                connectIfNeeded(reason: "api_key_changed")
+                            }
+                        },
+                        onConnect: {
+                            connectIfNeeded(reason: "settings.reconnect")
                         }
-                    }
+                    )
                 case .activity:
                     ActivityLogView(entries: state.activity)
                 }

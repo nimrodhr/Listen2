@@ -62,10 +62,6 @@ struct LSTN2App: App {
                 }
             }
 
-            Button("Connect Backend") {
-                connectBackend()
-            }
-
             Divider()
 
             Button("Quit") {
@@ -108,22 +104,4 @@ struct LSTN2App: App {
         state.isWindowVisible = false
     }
 
-    private func connectBackend() {
-        guard state.connectionStatus != .connected && state.connectionStatus != .connecting else {
-            log.debug("Connect skipped: already \(state.connectionStatus.rawValue)")
-            state.logFrontendEvent("menubar.connect.skipped", detail: "already \(state.connectionStatus.rawValue)")
-            return
-        }
-
-        guard let url = URL(string: "ws://127.0.0.1:8765") else {
-            log.error("Invalid WebSocket URL")
-            state.logFrontendEvent("menubar.connect.failed", detail: "invalid websocket url", level: .error)
-            return
-        }
-
-        log.info("Connecting to backend at \(url.absoluteString)")
-        state.connectionStatus = .connecting
-        webSocketClient.connect(url: url, apiKey: state.settings.apiKey)
-        state.logFrontendEvent("menubar.connect.requested", detail: url.absoluteString)
-    }
 }

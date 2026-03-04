@@ -4,7 +4,9 @@ struct SettingsView: View {
     @Binding var settings: AppState.Settings
     let micDevices: [AppState.AudioDevice]
     let systemDevices: [AppState.AudioDevice]
+    let connectionStatus: AppState.ConnectionStatus
     let onSave: (AppState.Settings) -> Void
+    let onConnect: () -> Void
 
     @State private var draft: AppState.Settings
     @State private var showAPIKey = false
@@ -14,13 +16,17 @@ struct SettingsView: View {
         settings: Binding<AppState.Settings>,
         micDevices: [AppState.AudioDevice],
         systemDevices: [AppState.AudioDevice],
-        onSave: @escaping (AppState.Settings) -> Void
+        connectionStatus: AppState.ConnectionStatus,
+        onSave: @escaping (AppState.Settings) -> Void,
+        onConnect: @escaping () -> Void
     ) {
         _settings = settings
         _draft = State(initialValue: settings.wrappedValue)
         self.micDevices = micDevices
         self.systemDevices = systemDevices
+        self.connectionStatus = connectionStatus
         self.onSave = onSave
+        self.onConnect = onConnect
     }
 
     var body: some View {
@@ -40,6 +46,7 @@ struct SettingsView: View {
                 VStack(spacing: 0) {
                     openAISection
                     audioSection
+                    backendSection
                 }
             }
 
@@ -185,6 +192,46 @@ struct SettingsView: View {
                 }
             }
             .labelsHidden()
+        }
+    }
+
+    // MARK: - Backend Section
+
+    private var backendSection: some View {
+        SettingsSection("Backend") {
+            SettingsRow("Connection") {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(backendStatusColor)
+                        .frame(width: 7, height: 7)
+
+                    Text(backendStatusLabel)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    if connectionStatus != .connected {
+                        Button("Reconnect") { onConnect() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
+    private var backendStatusColor: Color {
+        switch connectionStatus {
+        case .disconnected: .red.opacity(0.7)
+        case .connecting: .orange
+        case .connected: .green
+        }
+    }
+
+    private var backendStatusLabel: String {
+        switch connectionStatus {
+        case .disconnected: "Disconnected"
+        case .connecting: "Connecting…"
+        case .connected: "Connected"
         }
     }
 
