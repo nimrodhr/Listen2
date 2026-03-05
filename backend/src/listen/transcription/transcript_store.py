@@ -4,49 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Coroutine, Any, Optional
 
+from listen.utils.text_filters import is_likely_english as _is_likely_english
+
 logger = logging.getLogger("listen.transcription.transcript_store")
-logger.info("Transcript store English-only filter ACTIVE (v2)")
-
-# Non-Latin script characters — hard block for English-only mode
-_NON_LATIN_RE = re.compile(
-    r"[\u0400-\u04FF"   # Cyrillic
-    r"\u0500-\u052F"    # Cyrillic Supplement
-    r"\u0590-\u05FF"    # Hebrew
-    r"\u0600-\u06FF"    # Arabic
-    r"\u0900-\u097F"    # Devanagari
-    r"\u0E00-\u0E7F"    # Thai
-    r"\u3040-\u309F"    # Hiragana
-    r"\u30A0-\u30FF"    # Katakana
-    r"\u4E00-\u9FFF"    # CJK
-    r"\uAC00-\uD7AF"    # Korean
-    r"]"
-)
-
-_SLAVIC_DIACRITICS_RE = re.compile(r"[žšćčđŽŠĆČĐňřťďĺľŕĎŇŘŤĹĽŔ]")
-
-
-def _is_likely_english(text: str) -> bool:
-    """Return True if text appears to be English."""
-    stripped = text.strip()
-    if not stripped:
-        return True  # Allow empty/whitespace (harmless)
-
-    if _NON_LATIN_RE.search(stripped):
-        return False
-
-    alpha_chars = sum(1 for c in stripped if c.isalpha())
-    if alpha_chars > 0:
-        slavic_count = len(_SLAVIC_DIACRITICS_RE.findall(stripped))
-        if slavic_count > 0 and slavic_count / alpha_chars > 0.05:
-            return False
-
-    return True
 
 TranscriptUpdateCallback = Callable[["TranscriptEntry"], Coroutine[Any, Any, None]]
 
@@ -146,32 +111,43 @@ class TranscriptStore:
         if self.on_completed:
             await self.on_completed(entry)
 
-    def get_recent(self, n: int = 10) -> list[TranscriptEntry]:
+    async def get_recent(self, n: int = 10) -> list[TranscriptEntry]:
         """Get the last N transcript entries in chronological order."""
-        recent_ids = self._ordered_ids[-n:]
-        return [self._entries[tid] for tid in recent_ids if tid in self._entries]
+        async with self._lock:
+            recent_ids = self._ordered_ids[-n:]
+            return [self._entries[tid] for tid in recent_ids if tid in self._entries]
 
-    def get_recent_by_speaker(
+    async def get_recent_by_speaker(
         self, speaker: str, n: int = 10
     ) -> list[TranscriptEntry]:
         """Get the last N finalized entries from a specific speaker."""
-        entries = [
-            self._entries[tid]
-            for tid in self._ordered_ids
-            if tid in self._entries
-            and self._entries[tid].speaker == speaker
-            and self._entries[tid].is_final
-        ]
-        return entries[-n:]
+        async with self._lock:
+            entries = [
+                self._entries[tid]
+                for tid in self._ordered_ids
+                if tid in self._entries
+                and self._entries[tid].speaker == speaker
+                and self._entries[tid].is_final
+            ]
+            return entries[-n:]
 
-    def get_recent_seconds(self, seconds: int = 60) -> list[TranscriptEntry]:
+    async def get_recent_seconds(self, seconds: int = 60) -> list[TranscriptEntry]:
         """Get all entries from the last N seconds."""
-        cutoff = time.time() - seconds
-        return [
-            self._entries[tid]
-            for tid in self._ordered_ids
-            if tid in self._entries and self._entries[tid].timestamp >= cutoff
-        ]
+        async with self._lock:
+            cutoff = time.time() - seconds
+            return [
+                self._entries[tid]
+                for tid in self._ordered_ids
+                if tid in self._entries and self._entries[tid].timestamp >= cutoff
+            ]
+
+    async def update_entry_text(self, turn_id: str, text: str) -> bool:
+        """Update the text of an existing entry. Returns True if found."""
+        async with self._lock:
+            if turn_id in self._entries:
+                self._entries[turn_id].text = text
+                return True
+            return False
 
     async def clear(self) -> None:
         """Clear all stored transcript entries."""

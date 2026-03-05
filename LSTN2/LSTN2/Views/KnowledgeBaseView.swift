@@ -236,7 +236,10 @@ struct KnowledgeBaseView: View {
     // MARK: - Actions
 
     private func requestKBStatus() {
-        guard state.connectionStatus == .connected else { return }
+        guard state.connectionStatus == .connected else {
+            state.kbIsLoading = false
+            return
+        }
         state.kbIsLoading = true
         Task {
             do {

@@ -11,17 +11,27 @@ final class PythonManager {
     private var stderrPipe: Pipe?
 
     /// Initializes the manager with the backend project directory and uv binary path.
+    /// Uses `LSTN2_BACKEND_DIR` environment variable if set, otherwise derives from home directory.
     init(
-        backendDirectory: String = "\(NSHomeDirectory())/Documents/LSTN2/backend",
+        backendDirectory: String? = nil,
         uvPath: String = "\(NSHomeDirectory())/.local/bin/uv"
     ) {
-        self.backendDirectory = backendDirectory
+        if let dir = backendDirectory {
+            self.backendDirectory = dir
+        } else if let envDir = ProcessInfo.processInfo.environment["LSTN2_BACKEND_DIR"] {
+            self.backendDirectory = envDir
+        } else {
+            self.backendDirectory = "\(NSHomeDirectory())/Documents/LSTN2/backend"
+        }
         self.uvPath = uvPath
     }
 
     func startBackend() throws {
         // Stop any previous instance first
         stopBackend()
+
+        // Kill any stale backend processes left from a previous app session
+        killStaleBackend()
 
         guard FileManager.default.fileExists(atPath: uvPath) else {
             log.error("uv binary not found at \(self.uvPath)")
@@ -93,7 +103,19 @@ final class PythonManager {
         if process.isRunning {
             log.info("Stopping backend process (pid=\(process.processIdentifier))")
             process.terminate()
-            process.waitUntilExit()
+
+            // Use a semaphore for bounded wait instead of blocking indefinitely
+            let semaphore = DispatchSemaphore(value: 0)
+            let previousHandler = process.terminationHandler
+            process.terminationHandler = { proc in
+                previousHandler?(proc)
+                semaphore.signal()
+            }
+            let result = semaphore.wait(timeout: .now() + 5)
+            if result == .timedOut {
+                log.warning("Backend process did not exit within 5s, force killing")
+                process.interrupt()
+            }
             log.info("Backend process stopped (exit=\(process.terminationStatus))")
         }
 
@@ -107,6 +129,38 @@ final class PythonManager {
 
     var isRunning: Bool {
         process?.isRunning == true
+    }
+
+    /// Kill any stale backend processes listening on the WebSocket port (8765).
+    /// This handles orphaned processes from a previous app session that crashed
+    /// or was force-quit without cleanly terminating the backend.
+    private func killStaleBackend() {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", "tcp:8765"]
+        let pipe = Pipe()
+        lsof.standardOutput = pipe
+        lsof.standardError = FileHandle.nullDevice
+
+        do {
+            try lsof.run()
+            lsof.waitUntilExit()
+        } catch {
+            return
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty else { return }
+
+        for pidStr in output.split(separator: "\n") {
+            guard let pid = Int32(pidStr.trimmingCharacters(in: .whitespaces)) else { continue }
+            log.warning("Killing stale backend process on port 8765 (pid=\(pid))")
+            kill(pid, SIGTERM)
+        }
+
+        // Brief wait for processes to exit
+        Thread.sleep(forTimeInterval: 0.5)
     }
 }
 

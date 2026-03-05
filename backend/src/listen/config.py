@@ -81,7 +81,6 @@ class KnowledgeBaseConfig(BaseModel):
 class QuestionDetectionConfig(BaseModel):
     confidence_threshold: float = 0.7
     context_window_turns: int = 10
-    context_window_seconds: int = 60
 
 
 class RagConfig(BaseModel):

@@ -91,9 +91,21 @@ struct QuestionListView: View {
 
     // MARK: - CSV Export
 
+    private func formatElapsed(_ elapsed: TimeInterval) -> String {
+        let total = Int(elapsed)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+
     private func exportAnsweredCSV() {
-        let header = "Category,Question,Answer,Sources"
+        let header = "Timestamp,Category,Question,Answer,Sources"
         let rows = answeredQuestions.map { card -> String in
+            let timestamp = formatElapsed(card.elapsed)
             let category = card.category.rawValue.replacingOccurrences(of: "_", with: " ").capitalized
             let question = csvEscape(card.question)
             let answer: String
@@ -103,7 +115,7 @@ struct QuestionListView: View {
                 answer = ""
             }
             let sources = card.sources.map { $0.fileName + ($0.page.map { " p.\($0)" } ?? "") }.joined(separator: "; ")
-            return "\(csvEscape(category)),\(question),\(answer),\(csvEscape(sources))"
+            return "\(timestamp),\(csvEscape(category)),\(question),\(answer),\(csvEscape(sources))"
         }
         let csv = ([header] + rows).joined(separator: "\n")
 
@@ -117,7 +129,17 @@ struct QuestionListView: View {
         panel.allowedContentTypes = [UTType.commaSeparatedText]
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            try? csv.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try csv.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Export Failed"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
         }
     }
 

@@ -8,6 +8,7 @@ final class EventRouter {
     private let state: AppState
 
     /// Non-Latin script regex for frontend-side English filtering (safety net).
+    /// Mirrors `is_likely_english()` in backend/src/listen/utils/text_filters.py.
     private static let nonLatinPattern: NSRegularExpression = {
         // Cyrillic, Hebrew, Arabic, Devanagari, Thai, Hiragana, Katakana, CJK, Korean
         let pattern = "[\\u0400-\\u052F\\u0590-\\u05FF\\u0600-\\u06FF\\u0900-\\u097F\\u0E00-\\u0E7F\\u3040-\\u309F\\u30A0-\\u30FF\\u4E00-\\u9FFF\\uAC00-\\uD7AF]"
@@ -35,7 +36,8 @@ final class EventRouter {
         // Only log non-noisy events; transcript deltas/completions are too frequent.
         if envelope.event != .pong
             && envelope.event != .transcriptDelta
-            && envelope.event != .transcriptCompleted {
+            && envelope.event != .transcriptCompleted
+            && envelope.event != .transcriptCorrected {
             state.logBackendEvent(envelope.event.rawValue)
         }
 
@@ -182,6 +184,13 @@ final class EventRouter {
         case .pong:
             break  // heartbeat — no activity log noise
 
+        case .transcriptCorrected:
+            let turnId = envelope.payload["turn_id"] as? String ?? ""
+            let correctedText = envelope.payload["corrected_text"] as? String ?? ""
+            if !turnId.isEmpty && !correctedText.isEmpty {
+                state.updateTranscriptText(turnId: turnId, text: correctedText)
+            }
+
         case .audioSetupStatus, .activityLog, .activityLogEntry,
              .transcriptSessions, .transcriptSessionData:
             state.logBackendEvent(envelope.event.rawValue)
@@ -190,7 +199,11 @@ final class EventRouter {
 
     /// Convert a Unix timestamp from the backend into seconds elapsed since recording started.
     private func computeElapsed(_ unixTimestamp: TimeInterval) -> TimeInterval {
-        guard let start = state.startDate else { return 0 }
+        guard let start = state.startDate else {
+            // startDate not yet set (event arrived before recordingState);
+            // return 0 as a safe fallback
+            return 0
+        }
         let elapsed = unixTimestamp - start.timeIntervalSince1970
         return max(elapsed, 0)
     }

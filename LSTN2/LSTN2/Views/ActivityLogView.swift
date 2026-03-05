@@ -77,9 +77,10 @@ struct ActivityLogView: View {
         var csv = "timestamp,level,category,message\n"
         for entry in entries.reversed() {
             let ts = dateFormatter.string(from: entry.timestamp)
-            let msg = entry.message
-                .replacingOccurrences(of: "\"", with: "\"\"")
-            csv += "\(ts),\(entry.level.rawValue),\(entry.category),\"\(msg)\"\n"
+            let level = entry.level.rawValue.replacingOccurrences(of: "\"", with: "\"\"")
+            let category = entry.category.replacingOccurrences(of: "\"", with: "\"\"")
+            let msg = entry.message.replacingOccurrences(of: "\"", with: "\"\"")
+            csv += "\"\(ts)\",\"\(level)\",\"\(category)\",\"\(msg)\"\n"
         }
 
         let panel = NSSavePanel()

@@ -78,12 +78,6 @@ struct ContentView: View {
         }
         .background(Color(NSColor.windowBackgroundColor))
         .frame(minWidth: 340, idealWidth: 370, maxWidth: 420, minHeight: 700, idealHeight: 800)
-        .sheet(isPresented: Binding(
-            get: { state.showAudioSetupWizard },
-            set: { state.showAudioSetupWizard = $0 }
-        )) {
-            AudioSetupView()
-        }
         .onAppear {
             state.isWindowVisible = true
             state.logFrontendEvent("app.view.appeared")
@@ -110,6 +104,8 @@ struct ContentView: View {
                             state.setRecording(false)
                             state.logFrontendEvent("recording.reset_on_disconnect", level: .warning)
                         }
+                        // Reset KB loading spinner so it doesn't stay stuck
+                        state.kbIsLoading = false
                     }
                 }
             }
@@ -135,12 +131,13 @@ struct ContentView: View {
                 }
             }
         }
-        .onChange(of: state.showAudioSetupWizard) { _, isPresented in
-            state.logFrontendEvent("audio_setup.sheet", detail: isPresented ? "presented" : "dismissed")
-        }
         .onDisappear {
             state.isWindowVisible = false
             state.logFrontendEvent("app.view.disappeared")
+            // Nil out WebSocket callbacks to avoid retaining stale closures
+            webSocketClient.onTextMessage = nil
+            webSocketClient.onConnectionChanged = nil
+            webSocketClient.onLifecycleEvent = nil
         }
     }
 
@@ -238,7 +235,8 @@ struct ContentView: View {
                         }
                     }
                 }
-                // Always reset the frontend state so the user is never stuck
+                // Always reset the frontend state so the user is never stuck,
+                // even if the backend stop command fails or connection is lost.
                 state.setRecording(false)
                 return
             }

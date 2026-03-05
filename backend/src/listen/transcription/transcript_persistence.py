@@ -34,13 +34,13 @@ class TranscriptPersistence:
         logger.info(f"Transcript session started: {self._current_session_id}")
         return self._current_session_id
 
-    def save_session(self, store: TranscriptStore) -> Optional[Path]:
+    async def save_session(self, store: TranscriptStore) -> Optional[Path]:
         """Save the current transcript store contents to a JSON file."""
         if not self._current_session_id:
             logger.warning("No active session to save")
             return None
 
-        entries = store.get_recent(n=10000)  # Get all entries
+        entries = await store.get_recent(n=10000)  # Get all entries
         if not entries:
             logger.info("No transcript entries to save")
             return None
@@ -65,16 +65,18 @@ class TranscriptPersistence:
             ],
         }
 
-        file_path.write_text(json.dumps(data, indent=2))
-        os.chmod(file_path, 0o600)
+        tmp_path = file_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, file_path)
         logger.info(
             f"Transcript saved: {file_path} ({len(data['entries'])} entries)"
         )
         return file_path
 
-    def end_session(self, store: TranscriptStore) -> Optional[Path]:
+    async def end_session(self, store: TranscriptStore) -> Optional[Path]:
         """End the current session and save transcript."""
-        path = self.save_session(store)
+        path = await self.save_session(store)
         self._current_session_id = None
         self._session_start = None
         return path

@@ -66,8 +66,10 @@ final class WebSocketClient: @unchecked Sendable {
         self.session = nil
         currentTask?.cancel(with: .normalClosure, reason: nil)
         currentSession?.invalidateAndCancel()
-        onConnectionChanged?(false)
-        onLifecycleEvent?("connect.closed")
+        DispatchQueue.main.async {
+            self.onConnectionChanged?(false)
+            self.onLifecycleEvent?("connect.closed")
+        }
     }
 
     func send(_ command: ClientCommand) async throws {

@@ -40,6 +40,7 @@ enum EventName: String {
     case recordingState = "recording_state"
     case transcriptDelta = "transcript.delta"
     case transcriptCompleted = "transcript.completed"
+    case transcriptCorrected = "transcript.corrected"
     case questionDetected = "question.detected"
     case questionAnswered = "question.answered"
     case questionNoAnswer = "question.no_answer"

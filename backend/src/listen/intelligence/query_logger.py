@@ -42,6 +42,14 @@ class QueryLogger:
     def log(self, entry: QueryLogEntry) -> None:
         """Append a query log entry to the JSONL file."""
         try:
+            # Rotate if file exceeds max size
+            if self._path.exists() and self._path.stat().st_size > self.MAX_LOG_SIZE:
+                rotated = self._path.with_suffix(".jsonl.old")
+                try:
+                    import os
+                    os.replace(self._path, rotated)
+                except OSError:
+                    pass
             record = asdict(entry)
             # Truncate chunk texts to save disk space
             for chunk_list_key in ("retrieved_chunks", "reranked_chunks"):
@@ -53,16 +61,31 @@ class QueryLogger:
         except Exception as e:
             logger.warning(f"Failed to write query log: {e}")
 
+    MAX_LOG_SIZE = 10 * 1024 * 1024  # 10 MB
+
     def get_recent(self, n: int = 50) -> list[dict]:
-        """Read the last N log entries."""
+        """Read the last N log entries efficiently from the end of the file."""
         if not self._path.exists():
             return []
         try:
-            lines = self._path.read_text().strip().split("\n")
+            # Read only the tail of the file to avoid loading megabytes
+            with open(self._path, "rb") as f:
+                f.seek(0, 2)  # Seek to end
+                size = f.tell()
+                # Read last ~64KB which should contain well over 50 entries
+                read_size = min(size, 64 * 1024)
+                f.seek(max(0, size - read_size))
+                tail = f.read().decode("utf-8", errors="replace")
+
+            lines = tail.strip().split("\n")
             entries = []
             for line in lines[-n:]:
+                line = line.strip()
                 if line:
-                    entries.append(json.loads(line))
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
             return entries
         except Exception as e:
             logger.warning(f"Failed to read query log: {e}")

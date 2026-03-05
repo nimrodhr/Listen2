@@ -76,7 +76,7 @@ class QuestionDetector:
         logger.debug(f"Checking for question: speaker={speaker}, turn_id={turn_id}")
 
         # Build context from recent turns
-        recent = self.transcript_store.get_recent(self.context_window_turns)
+        recent = await self.transcript_store.get_recent(self.context_window_turns)
         context_lines = []
         for entry in recent:
             speaker_label = "Me" if entry.speaker == "me" else "Them"

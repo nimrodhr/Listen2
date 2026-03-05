@@ -13,52 +13,15 @@ from typing import Callable, Coroutine, Any, Optional
 
 import websockets
 
+from listen.utils.text_filters import is_likely_english as _is_likely_english
+
 logger = logging.getLogger("listen.transcription.openai_realtime")
-logger.info("English-only language filter ACTIVE (v2)")
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 MAX_SESSION_DURATION = 55 * 60  # Reconnect at 55 minutes (limit is 60)
 
 # Pattern to strip raw VQ audio codec tokens that OpenAI sometimes emits
 _VQ_TOKEN_RE = re.compile(r"<\|vq_\w+\|>")
-
-# Non-Latin script characters (Cyrillic, Hebrew, Arabic, CJK, Thai, Devanagari, etc.)
-_NON_LATIN_RE = re.compile(
-    r"[\u0400-\u04FF"   # Cyrillic
-    r"\u0500-\u052F"    # Cyrillic Supplement
-    r"\u0590-\u05FF"    # Hebrew
-    r"\u0600-\u06FF"    # Arabic
-    r"\u0900-\u097F"    # Devanagari
-    r"\u0E00-\u0E7F"    # Thai
-    r"\u3040-\u309F"    # Hiragana
-    r"\u30A0-\u30FF"    # Katakana
-    r"\u4E00-\u9FFF"    # CJK
-    r"\uAC00-\uD7AF"    # Korean
-    r"]"
-)
-
-# Diacritics common in Slavic languages but very rare in English
-_SLAVIC_DIACRITICS_RE = re.compile(r"[žšćčđŽŠĆČĐňřťďĺľŕĎŇŘŤĹĽŔ]")
-
-
-def _is_likely_english(text: str) -> bool:
-    """Return True if text appears to be English, False otherwise."""
-    stripped = text.strip()
-    if not stripped:
-        return False
-
-    # Reject any text containing non-Latin scripts
-    if _NON_LATIN_RE.search(stripped):
-        return False
-
-    # Reject text with Slavic diacritics (very rare in English)
-    alpha_chars = sum(1 for c in stripped if c.isalpha())
-    if alpha_chars > 0:
-        slavic_count = len(_SLAVIC_DIACRITICS_RE.findall(stripped))
-        if slavic_count > 0 and slavic_count / alpha_chars > 0.05:
-            return False
-
-    return True
 
 
 # Callback type: async def callback(turn_id, text, speaker, confidence) -> None
@@ -96,9 +59,11 @@ class OpenAIRealtimeSession:
         self._connected_at: float = 0.0
         self._running = False
 
-        # Confidence estimation state
-        self._speech_start_time: Optional[float] = None
-        self._speech_stop_time: Optional[float] = None
+        # Confidence estimation state (per-item to avoid cross-turn corruption)
+        self._speech_timing: dict[str, list[float]] = {}  # item_id -> [start, stop]
+        self._current_speech_item_id: Optional[str] = None
+        self._current_speech_start: Optional[float] = None
+        self._pending_speech_timing: Optional[tuple[float, float]] = None
         self._accumulated_deltas: dict[str, str] = {}  # item_id -> accumulated delta text
 
         # Callbacks — set by the parent (TranscriptionSessionPair or main.py)
@@ -112,6 +77,13 @@ class OpenAIRealtimeSession:
         self._running = True
 
         while self._running:
+            # Drain stale audio from previous connection cycle
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
             try:
                 headers = {
                     "Authorization": f"Bearer {self.api_key}",
@@ -273,14 +245,24 @@ class OpenAIRealtimeSession:
             logger.info(f"[{self.label}] Transcription session updated")
 
         elif event_type == "input_audio_buffer.speech_started":
-            self._speech_start_time = time.time()
+            self._current_speech_start = time.time()
             logger.debug(f"[{self.label}] Speech started")
 
         elif event_type == "input_audio_buffer.speech_stopped":
-            self._speech_stop_time = time.time()
+            stop_time = time.time()
+            # Associate timing with the next committed item
+            if self._current_speech_start is not None:
+                self._pending_speech_timing = (self._current_speech_start, stop_time)
+            else:
+                self._pending_speech_timing = None
             logger.debug(f"[{self.label}] Speech stopped")
 
         elif event_type == "input_audio_buffer.committed":
+            item_id = event.get("item_id", "")
+            if hasattr(self, "_pending_speech_timing") and self._pending_speech_timing and item_id:
+                start, stop = self._pending_speech_timing
+                self._speech_timing[item_id] = [start, stop]
+                self._pending_speech_timing = None
             logger.debug(f"[{self.label}] Audio buffer committed")
 
         elif event_type == "error":
@@ -296,6 +278,8 @@ class OpenAIRealtimeSession:
         Combines two signals:
         - Delta-final similarity: how much the ASR self-corrected (high similarity = high confidence)
         - Speech duration ratio: words-per-second in a plausible range
+
+        Uses per-item speech timing to avoid cross-turn corruption.
         """
         # 1. Delta-final divergence
         accumulated = self._accumulated_deltas.get(item_id, "")
@@ -304,10 +288,12 @@ class OpenAIRealtimeSession:
         else:
             similarity = 1.0  # No deltas to compare — assume good
 
-        # 2. Speech duration ratio
+        # 2. Speech duration ratio (per-item timing)
         duration_score = 1.0
-        if self._speech_start_time and self._speech_stop_time:
-            duration = self._speech_stop_time - self._speech_start_time
+        timing = self._speech_timing.get(item_id)
+        if timing:
+            start, stop = timing
+            duration = stop - start
             if duration > 0.1:
                 wps = len(final_text.split()) / duration
                 # Normal English speech: ~2-4 words/sec; flag outliers
@@ -317,6 +303,8 @@ class OpenAIRealtimeSession:
                     duration_score = 0.6
                 else:
                     duration_score = 1.0
+            # Clean up timing for this item
+            del self._speech_timing[item_id]
 
         confidence = 0.6 * similarity + 0.4 * duration_score
         confidence = max(0.0, min(1.0, confidence))

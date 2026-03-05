@@ -126,15 +126,6 @@ class ActivityLog:
         if kept:
             self._rewrite(kept)
 
-    def _append(self, entry: ActivityLogEntry) -> None:
-        """Append a single entry to the JSONL file."""
-        try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._log_path, "a") as f:
-                f.write(json.dumps(asdict(entry)) + "\n")
-        except OSError as e:
-            logger.warning(f"Failed to write activity log entry: {e}")
-
     def flush(self) -> None:
         """Force-flush all pending writes to disk. Call on shutdown."""
         self._flush_pending()

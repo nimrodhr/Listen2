@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -83,6 +84,10 @@ class _QueryCache:
     def put(self, key: str, result: RAGResult) -> None:
         self._cache[key] = (time.time(), result)
 
+    def invalidate(self) -> None:
+        """Clear all cached results (e.g. after KB update)."""
+        self._cache.clear()
+
     @staticmethod
     def make_key(query: str, top_k: int, collection: str) -> str:
         raw = f"{query}|{top_k}|{collection}"
@@ -150,10 +155,11 @@ class RAGEngine:
             self._log_query(question_text, [], [], cached, start, cache_hit=True)
             return cached
 
-        # Step 1: Retrieve candidates
+        # Step 1: Retrieve candidates (run in thread to avoid blocking event loop)
         retrieve_n = self._reranker_candidates if self._reranker else self.top_k
         if self.hybrid_search:
-            matches = self.vector_store.hybrid_query(
+            matches = await asyncio.to_thread(
+                self.vector_store.hybrid_query,
                 question_text,
                 n_results=retrieve_n,
                 source_filter=source_filter,
@@ -161,7 +167,8 @@ class RAGEngine:
                 similarity_threshold=self.similarity_threshold,
             )
         else:
-            matches = self.vector_store.query(
+            matches = await asyncio.to_thread(
+                self.vector_store.query,
                 question_text,
                 n_results=retrieve_n,
                 source_filter=source_filter,

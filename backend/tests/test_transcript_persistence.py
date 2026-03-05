@@ -18,7 +18,7 @@ class TestTranscriptPersistence:
 
         persistence = TranscriptPersistence(transcripts_dir=str(tmp_path))
         session_id = persistence.start_session()
-        path = persistence.end_session(store)
+        path = await persistence.end_session(store)
 
         assert path is not None
         assert path.exists()
@@ -36,7 +36,7 @@ class TestTranscriptPersistence:
 
         persistence = TranscriptPersistence(transcripts_dir=str(tmp_path))
         persistence.start_session()
-        persistence.end_session(store)
+        await persistence.end_session(store)
 
         sessions = persistence.list_sessions()
         assert len(sessions) == 1
@@ -49,7 +49,7 @@ class TestTranscriptPersistence:
 
         persistence = TranscriptPersistence(transcripts_dir=str(tmp_path))
         session_id = persistence.start_session()
-        persistence.end_session(store)
+        await persistence.end_session(store)
 
         assert persistence.delete_session(session_id) is True
         assert persistence.load_session(session_id) is None
@@ -58,5 +58,5 @@ class TestTranscriptPersistence:
         store = TranscriptStore()
         persistence = TranscriptPersistence(transcripts_dir=str(tmp_path))
         persistence.start_session()
-        path = persistence.end_session(store)
+        path = await persistence.end_session(store)
         assert path is None

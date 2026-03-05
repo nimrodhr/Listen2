@@ -51,6 +51,18 @@ struct LSTN2App: App {
                     }
                     state.setRecording(false)
                 } else {
+                    // Validate API key and connection before starting
+                    guard !state.settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        state.errorMessage = "API key is required. Go to Settings and enter your OpenAI API key before recording."
+                        state.logFrontendEvent("menubar.recording.blocked", detail: "no api key", level: .warning)
+                        return
+                    }
+                    guard state.connectionStatus == .connected else {
+                        state.errorMessage = "Not connected to backend. Check that the backend server is running."
+                        state.logFrontendEvent("menubar.recording.blocked", detail: "not connected", level: .warning)
+                        return
+                    }
+
                     state.logFrontendEvent("menubar.recording.start")
                     Task {
                         do {
@@ -67,8 +79,12 @@ struct LSTN2App: App {
             Button("Quit") {
                 log.info("User quit requested")
                 state.logFrontendEvent("menubar.quit")
-                pythonManager.stopBackend()
-                NSApplication.shared.terminate(nil)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    pythonManager.stopBackend()
+                    DispatchQueue.main.async {
+                        NSApplication.shared.terminate(nil)
+                    }
+                }
             }
         } label: {
             Text("LSTN2")

@@ -198,7 +198,6 @@ final class AppState {
     var isWindowVisible = true
 
     var errorMessage: String?
-    var showAudioSetupWizard = false
 
     var kbSources: [KBSource] = []
     var kbStatus: KBStatus = KBStatus()
@@ -210,12 +209,15 @@ final class AppState {
         isRecording = value
         if value {
             startDate = Date()
+        } else {
+            startDate = nil
         }
     }
 
     func appendTranscript(speaker: Speaker, text: String, elapsed: TimeInterval, isFinal: Bool, turnId: String? = nil) {
-        // If we have a turnId, update existing entry instead of creating duplicate
-        if let turnId, let index = transcript.lastIndex(where: { $0.turnId == turnId }) {
+        // If we have a turnId, update existing entry instead of creating duplicate.
+        // Use firstIndex (not lastIndex) to handle entries that may have been trimmed and re-added.
+        if let turnId, let index = transcript.firstIndex(where: { $0.turnId == turnId }) {
             transcript[index].text = text
             transcript[index].isFinal = isFinal
             return
@@ -231,6 +233,11 @@ final class AppState {
         }
     }
 
+    func updateTranscriptText(turnId: String, text: String) {
+        guard let index = transcript.firstIndex(where: { $0.turnId == turnId }) else { return }
+        transcript[index].text = text
+    }
+
     func removeTranscriptByTurnId(_ turnId: String) {
         transcript.removeAll(where: { $0.turnId == turnId })
     }
@@ -242,12 +249,6 @@ final class AppState {
 
     func appendQuestion(_ card: QuestionCard) {
         questions.insert(card, at: 0)
-    }
-
-    func updateQuestion(id: UUID, state: QuestionCard.State, sources: [SourceBadge] = []) {
-        guard let index = questions.firstIndex(where: { $0.id == id }) else { return }
-        questions[index].state = state
-        questions[index].sources = sources
     }
 
     func updateQuestion(backendId: String, state: QuestionCard.State, sources: [SourceBadge] = []) {
@@ -372,7 +373,8 @@ final class AppState {
 
     func removeKBSource(id: String) {
         kbSources.removeAll(where: { $0.id == id })
-        kbStatus.totalDocuments = kbSources.count
+        // Don't update totalDocuments from local count — let the next kb.status event
+        // from the backend provide the authoritative counts.
     }
 
     func clearKB() {
