@@ -1,10 +1,18 @@
 # LSTN2
 
-A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base.
+A macOS meeting co-pilot that provides real-time transcription, automatic question detection, and context-aware Q&A — powered by OpenAI and a local knowledge base.
+
+## Features
+
+- **Live Transcription** — Dual-stream capture (microphone + system audio) with real-time speaker-labeled transcription via OpenAI Realtime API
+- **Automatic Question Detection** — Identifies questions in conversation, categorized by type (factual, opinion, clarification, action item)
+- **RAG-Powered Answers** — Answers detected questions using your knowledge base with source citations (hybrid vector + BM25 search with reranking)
+- **Knowledge Base** — Ingest documents (PDF, TXT, MD, DOCX) into a local ChromaDB vector store
+- **Transcript Persistence** — Sessions saved to disk with export support
+- **Activity Log** — Event tracking with 24-hour retention
+- **Menu Bar Access** — Quick toggle via the LSTN2 menu bar icon
 
 ## Architecture
-
-**macOS app (SwiftUI)** communicates over WebSocket with a **Python backend** that handles audio capture, transcription, and intelligence.
 
 ```
 ┌─────────────────────┐     WebSocket (8765)     ┌──────────────────────┐
@@ -17,47 +25,35 @@ A macOS meeting co-pilot that provides real-time transcription, question detecti
 └─────────────────────┘                          └──────────────────────┘
 ```
 
-### Frontend (Swift/SwiftUI)
-
-- `ContentView.swift` — Main window with connection badge, panel navigation, and recording controls
-- `Views/` — TranscriptView, QuestionListView, KnowledgeBaseView, SettingsView, ActivityLogView, ErrorBannerView
-- `State/AppState.swift` — `@Observable` app state (transcript, questions, KB, settings, activity)
-- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, PythonManager
-- `Models/Protocol.swift` — Command/event protocol matching the backend
-
-### Backend (Python)
-
-Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
-
-- Dual-stream audio capture (mic + system audio via BlackHole)
-- OpenAI Realtime API transcription with session pairs
-- Transcript persistence to `~/.listen/transcripts/`
-- LLM-based question detection with rate limiting
-- RAG-based answering (hybrid vector + BM25 search, reranking)
-- ChromaDB vector store for knowledge base
-- Document ingestion (PDF, TXT, MD, DOCX) with chunking and preprocessing
-- RAG query logging for analytics
-- Text normalization and non-English filtering
+The **SwiftUI frontend** handles UI and state management. The **Python backend** runs async pipelines for audio capture, transcription, intelligence, and knowledge base operations. They communicate over a local WebSocket using a typed `command.*` / `event.*` protocol.
 
 ## Requirements
 
 - macOS 14+
 - Xcode 16+
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/) installed (`~/.local/bin/uv`)
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/) (`~/.local/bin/uv`)
 - [BlackHole 2ch](https://existential.audio/blackhole/) for system audio capture
 - OpenAI API key
 
 ## Setup
 
-1. Clone the repo and open `LSTN2/LSTN2.xcodeproj` in Xcode
-2. Install the Python backend dependencies:
+1. **Clone the repo:**
+   ```bash
+   git clone https://github.com/nimrodhr/Listen2.git
+   cd Listen2
+   ```
+
+2. **Install backend dependencies:**
    ```bash
    cd backend
    uv sync
    ```
-3. Install BlackHole 2ch and configure a Multi-Output Device in Audio MIDI Setup
-4. Run the app from Xcode (Cmd+R) — it auto-launches the backend and connects via WebSocket
-5. Enter your OpenAI API key in Settings
+
+3. **Configure system audio** — Install [BlackHole 2ch](https://existential.audio/blackhole/) and create a Multi-Output Device in Audio MIDI Setup (combining your speakers/headphones + BlackHole 2ch).
+
+4. **Run the app** — Open `LSTN2/LSTN2.xcodeproj` in Xcode and press Cmd+R. The app auto-launches the Python backend.
+
+5. **Add your API key** — Go to the Settings panel and enter your OpenAI API key.
 
 ## Running the Backend Manually
 
@@ -71,25 +67,45 @@ uv run python -m listen.main   # Starts WebSocket server on ws://127.0.0.1:8765
 ```bash
 cd backend
 pytest                                    # All tests
-pytest tests/test_transcript_store.py -v  # Verbose single file
+pytest tests/test_transcript_store.py -v  # Single test file
 ```
 
-## Features
+## Project Structure
 
-- **Live Transcription** — Real-time dual-stream transcription (mic + system audio) with speaker labels
-- **Question Detection** — Automatically detects questions in conversation, categorized by type (factual, opinion, clarification, action item)
-- **RAG Q&A** — Answers questions using knowledge base context with source citations
-- **Knowledge Base** — Ingest documents (PDF, TXT, MD, DOCX) into a ChromaDB vector store
-- **Transcript Persistence** — Sessions saved to disk for later review
-- **Activity Log** — Frontend and backend event tracking with 24-hour retention
-- **Menu Bar** — Quick access via LSTN2 menu bar icon
+```
+LSTN2/LSTN2/                   # SwiftUI frontend
+├── LSTN2App.swift             # App entry point, lifecycle
+├── ContentView.swift          # Main window with panel navigation
+├── State/AppState.swift       # @Observable app state
+├── Services/                  # WebSocketClient, EventRouter, PythonManager
+├── Views/                     # Transcript, Questions, KB, Settings, Activity
+└── Models/Protocol.swift      # WebSocket protocol types
+
+backend/                       # Python backend
+├── src/listen/
+│   ├── main.py                # Entry point, PID guard
+│   ├── config.py              # Pydantic settings schema
+│   ├── server/                # WebSocket server, command routing
+│   ├── audio/                 # Dual-stream capture, resampling
+│   ├── transcription/         # OpenAI Realtime sessions, persistence
+│   ├── intelligence/          # Question detection, RAG engine, LLM client
+│   └── knowledge/             # ChromaDB vector store, document ingestion
+└── tests/
+```
 
 ## Data
 
 All persisted data lives under `~/.listen/`:
-- `settings.json` — config (API keys, models, audio devices, thresholds)
-- `activity.jsonl` — activity log
-- `chromadb/` — vector store
-- `backend.pid` — single-instance guard
-- `transcripts/` — saved transcript sessions
-- `rag_queries.jsonl` — RAG query analytics
+
+| File | Purpose |
+|------|---------|
+| `settings.json` | Config (API keys, models, audio devices, thresholds) |
+| `activity.jsonl` | Activity log with 24-hour retention |
+| `chromadb/` | Vector store |
+| `transcripts/` | Saved transcript sessions |
+| `backend.pid` | Single-instance guard |
+| `rag_queries.jsonl` | RAG query analytics |
+
+## License
+
+This project is for personal use.
