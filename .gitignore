@@ -22,15 +22,38 @@ dist/
 .idea/
 .vscode/
 *.swp
+*.swo
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Xcode user data
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+IDEWorkspaceChecks.plist
+
+# Xcode build
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
 
 # Chroma data (UUID-named dirs)
 [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*
+chromadb/
 
 # pytest
 .pytest_cache/
 
 # uv
 uv.lock
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Claude Code
+.claude/
