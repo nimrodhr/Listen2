@@ -29,6 +29,12 @@ struct EnvironmentStepView: View {
                 subStepRow(.deps, subtitle: "Backend libraries") {
                     depsInfoPanel
                 }
+
+                Divider().padding(.leading, 28)
+
+                subStepRow(.blackHole, subtitle: "Virtual audio loopback") {
+                    blackHoleInfoPanel
+                }
             }
             .padding(8)
             .background(Color(NSColor.controlBackgroundColor))
@@ -61,6 +67,29 @@ struct EnvironmentStepView: View {
                 Label("Environment is ready", systemImage: "checkmark.circle.fill")
                     .font(.callout)
                     .foregroundStyle(.green)
+            }
+
+            if state.blackHoleNeedsReboot {
+                Label("BlackHole installed — restart your Mac to activate the audio driver", systemImage: "arrow.clockwise.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            if !manager.checkBrewInstalled() && state.envSubStatuses[.blackHole] != .completed {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("BlackHole requires Homebrew for automatic installation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Link("Install Homebrew", destination: URL(string: "https://brew.sh")!)
+                            .font(.caption)
+                        Text("or")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Link("Download BlackHole manually", destination: URL(string: "https://existential.audio/blackhole/")!)
+                            .font(.caption)
+                    }
+                }
             }
         }
     }
@@ -120,6 +149,18 @@ struct EnvironmentStepView: View {
             }
 
             infoText("All packages are pinned to specific versions in the project's lock file, ensuring reproducible installs. Source code for every dependency is publicly auditable on PyPI and GitHub.")
+        }
+    }
+
+    private var blackHoleInfoPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            infoText("BlackHole is a free, open-source virtual audio driver for macOS by Existential Audio. It creates a virtual audio device that routes audio between applications.")
+            infoText("LSTN2 needs it to capture system audio output (what others say in a call). macOS doesn't allow this natively — BlackHole acts as a loopback device.")
+            infoText("It installs a macOS audio driver at /Library/Audio/Plug-Ins/HAL/. Uses zero CPU when not in use. Code-signed and notarized by Apple.")
+            if !manager.checkBrewInstalled() {
+                infoText("Automatic installation requires Homebrew. You can install Homebrew from brew.sh, or download BlackHole manually from existential.audio/blackhole.")
+            }
+            infoText("BlackHole is optional — microphone-only recording works without it. A restart may be required after installation to activate the audio driver.")
         }
     }
 
@@ -190,22 +231,27 @@ struct EnvironmentStepView: View {
     @ViewBuilder
     private func subStepIcon(_ subStep: SetupState.EnvironmentSubStep) -> some View {
         let status = state.envSubStatuses[subStep] ?? .pending
-        switch status {
-        case .completed:
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .failed:
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.red)
-        case .inProgress, .checking:
-            ProgressView()
-                .controlSize(.mini)
-        case .pending:
-            Image(systemName: "circle")
-                .foregroundStyle(.gray.opacity(0.4))
-        case .skipped:
-            Image(systemName: "minus.circle")
-                .foregroundStyle(.gray)
+        if subStep == .blackHole && state.blackHoleNeedsReboot && status == .completed {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .foregroundStyle(.orange)
+        } else {
+            switch status {
+            case .completed:
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .failed:
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            case .inProgress, .checking:
+                ProgressView()
+                    .controlSize(.mini)
+            case .pending:
+                Image(systemName: "circle")
+                    .foregroundStyle(.gray.opacity(0.4))
+            case .skipped:
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(.gray)
+            }
         }
     }
 
@@ -226,6 +272,7 @@ struct EnvironmentStepView: View {
                             case .uv: _ = await manager.installUv()
                             case .python: _ = await manager.installPython()
                             case .deps: _ = await manager.installBackendDeps()
+                            case .blackHole: _ = await manager.installBlackHole()
                             }
                             if state.isEnvironmentComplete {
                                 state.stepStatuses[.environment] = .completed

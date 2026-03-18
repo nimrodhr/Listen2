@@ -57,7 +57,22 @@ final class SetupManager {
             state.envSubStatuses[.deps] = depsOK ? .completed : .pending
         }
 
-        // Mark environment step overall
+        // BlackHole (environment sub-step, optional)
+        let bhFullyActive = checkBlackHoleInstalled()
+        let bhDriverExists = checkBlackHoleDriverExists()
+        if bhFullyActive {
+            state.envSubStatuses[.blackHole] = .completed
+            state.blackHoleNeedsReboot = false
+        } else if bhDriverExists {
+            // Driver installed but device not visible — needs reboot
+            state.envSubStatuses[.blackHole] = .completed
+            state.blackHoleNeedsReboot = true
+        } else {
+            state.envSubStatuses[.blackHole] = .pending
+            state.blackHoleNeedsReboot = false
+        }
+
+        // Mark environment step overall (based on required sub-steps only)
         if uvOK && pythonOK && depsOK {
             state.stepStatuses[.environment] = .completed
         }
@@ -68,11 +83,6 @@ final class SetupManager {
         if apiKeyOK {
             state.apiKeyInput = loadExistingAPIKey()
         }
-
-        // BlackHole
-        let bhOK = checkBlackHoleInstalled()
-        state.stepStatuses[.blackHole] = bhOK ? .completed : .pending
-        state.blackHoleDetected = bhOK
 
         // Audio config is informational, always pending until wizard marks it
         state.stepStatuses[.audioConfig] = .pending
@@ -119,17 +129,70 @@ final class SetupManager {
     }
 
     func checkBlackHoleInstalled() -> Bool {
-        // Primary: check driver file
-        let driverPath = "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver"
-        if FileManager.default.fileExists(atPath: driverPath) {
-            return true
-        }
-        // Fallback: check audio device names via AudioDeviceService
+        // Fully active: driver file exists AND audio device is visible
+        let driverExists = checkBlackHoleDriverExists()
         let service = AudioDeviceService()
         let devices = service.loadDevices()
-        return devices.systemOutputs.contains(where: {
+        let deviceVisible = devices.systemOutputs.contains(where: {
             $0.localizedCaseInsensitiveContains("BlackHole")
         })
+        return driverExists && deviceVisible
+    }
+
+    func checkBlackHoleDriverExists() -> Bool {
+        let driverPath = "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver"
+        return FileManager.default.fileExists(atPath: driverPath)
+    }
+
+    func checkBrewInstalled() -> Bool {
+        brewPath() != nil
+    }
+
+    func brewPath() -> String? {
+        let candidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    func installBlackHole() async -> Bool {
+        guard let brew = brewPath() else {
+            let msg = "Homebrew not found — install Homebrew first or install BlackHole manually"
+            state.envSubStatuses[.blackHole] = .failed(error: msg)
+            appendOutput("\n✗ \(msg)\n")
+            log.warning("\(msg)")
+            return false
+        }
+
+        state.envSubStatuses[.blackHole] = .inProgress(detail: "Installing BlackHole 2ch...")
+        appendOutput("$ brew install --cask blackhole-2ch\n")
+
+        let (exitCode, output) = await runProcess(
+            executablePath: brew,
+            arguments: ["install", "--cask", "blackhole-2ch"],
+            workingDirectory: nil
+        )
+
+        appendOutput(output)
+
+        if exitCode == 0 {
+            // Check if device is already visible or needs reboot
+            if checkBlackHoleInstalled() {
+                state.envSubStatuses[.blackHole] = .completed
+                state.blackHoleNeedsReboot = false
+                appendOutput("\n✓ BlackHole 2ch installed and active\n\n")
+            } else {
+                state.envSubStatuses[.blackHole] = .completed
+                state.blackHoleNeedsReboot = true
+                appendOutput("\n✓ BlackHole 2ch installed — restart required to activate audio driver\n\n")
+            }
+            log.info("BlackHole 2ch installed successfully")
+            return true
+        } else {
+            let errorMsg = "BlackHole installation failed (exit code: \(exitCode))"
+            state.envSubStatuses[.blackHole] = .failed(error: errorMsg)
+            appendOutput("\n✗ \(errorMsg)\n")
+            log.error("\(errorMsg)")
+            return false
+        }
     }
 
     // MARK: - Installation Actions
@@ -152,7 +215,15 @@ final class SetupManager {
             guard await installBackendDeps() else { return }
         }
 
-        state.stepStatuses[.environment] = .completed
+        // Step 4: BlackHole (optional — failure doesn't block environment)
+        if state.envSubStatuses[.blackHole] != .completed {
+            _ = await installBlackHole()
+        }
+
+        // Mark environment complete based on required sub-steps only
+        if state.isEnvironmentComplete {
+            state.stepStatuses[.environment] = .completed
+        }
     }
 
     func installUv() async -> Bool {

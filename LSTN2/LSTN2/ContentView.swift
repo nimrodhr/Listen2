@@ -257,6 +257,9 @@ struct ContentView: View {
             }
 
             state.logFrontendEvent("recording.start.requested")
+            withAnimation(.easeInOut(duration: 0.2)) {
+                activePanel = .live
+            }
             Task {
                 var payload: [String: Any] = [:]
                 if let micID = state.settings.micDeviceID {

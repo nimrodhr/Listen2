@@ -5,6 +5,8 @@ struct SetupWizardView: View {
     let setupManager: SetupManager
     let onComplete: () -> Void
 
+    @State private var showRebootAlert = false
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -42,8 +44,6 @@ struct SetupWizardView: View {
                         EnvironmentStepView(state: setupState, manager: setupManager)
                     case .apiKey:
                         APIKeyStepView(state: setupState, manager: setupManager)
-                    case .blackHole:
-                        BlackHoleStepView(state: setupState, manager: setupManager)
                     case .audioConfig:
                         AudioConfigStepView(state: setupState)
                     }
@@ -86,12 +86,30 @@ struct SetupWizardView: View {
 
             if isLastStep {
                 Button("Finish") {
-                    SetupState.markSetupComplete()
-                    onComplete()
+                    if setupState.blackHoleNeedsReboot {
+                        showRebootAlert = true
+                    } else {
+                        SetupState.markSetupComplete()
+                        onComplete()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!setupState.isSetupComplete)
+                .alert("Restart Required", isPresented: $showRebootAlert) {
+                    Button("Restart Later") {
+                        SetupState.markSetupComplete()
+                        onComplete()
+                    }
+                    Button("Restart Now") {
+                        SetupState.markSetupComplete()
+                        // Use AppleScript to trigger a restart
+                        let script = NSAppleScript(source: "tell application \"System Events\" to restart")
+                        script?.executeAndReturnError(nil)
+                    }
+                } message: {
+                    Text("BlackHole was installed but requires a restart to activate the audio driver. You can restart now or continue and restart later.")
+                }
             } else {
                 Button("Next") {
                     goToNextStep()
@@ -111,7 +129,7 @@ struct SetupWizardView: View {
     }
 
     private var isCurrentStepOptional: Bool {
-        [.apiKey, .blackHole, .audioConfig].contains(setupState.currentStep)
+        [.apiKey, .audioConfig].contains(setupState.currentStep)
     }
 
     private var isLastStep: Bool {

@@ -11,9 +11,8 @@ final class SetupState {
     // MARK: - Step Definition
 
     enum Step: Int, CaseIterable, Comparable {
-        case environment = 0   // uv + Python + deps (combined)
+        case environment = 0   // uv + Python + deps + BlackHole (combined)
         case apiKey
-        case blackHole
         case audioConfig
 
         static func < (lhs: Step, rhs: Step) -> Bool {
@@ -24,7 +23,6 @@ final class SetupState {
             switch self {
             case .environment: "Environment"
             case .apiKey: "API Key"
-            case .blackHole: "BlackHole"
             case .audioConfig: "Audio"
             }
         }
@@ -33,7 +31,6 @@ final class SetupState {
             switch self {
             case .environment: "terminal"
             case .apiKey: "key"
-            case .blackHole: "speaker.wave.2"
             case .audioConfig: "mic"
             }
         }
@@ -45,12 +42,14 @@ final class SetupState {
         case uv = 0
         case python
         case deps
+        case blackHole
 
         var title: String {
             switch self {
             case .uv: "Package Manager (uv)"
             case .python: "Python Runtime"
             case .deps: "Backend Dependencies"
+            case .blackHole: "BlackHole Audio Driver"
             }
         }
     }
@@ -94,9 +93,11 @@ final class SetupState {
         }
     }
 
-    /// True when environment sub-step is fully done.
+    /// True when required environment sub-steps are done (uv, python, deps).
+    /// BlackHole is optional — mic-only recording works without it.
     var isEnvironmentComplete: Bool {
-        EnvironmentSubStep.allCases.allSatisfy { sub in
+        let required: [EnvironmentSubStep] = [.uv, .python, .deps]
+        return required.allSatisfy { sub in
             envSubStatuses[sub] == .completed
         }
     }
@@ -109,13 +110,14 @@ final class SetupState {
     var detectedPythonVersion: String?
 
     // BlackHole
-    var blackHoleDetected: Bool = false
+    /// True when driver file is installed but audio device not yet visible (reboot needed)
+    var blackHoleNeedsReboot: Bool = false
 
     // MARK: - Persistence
 
     static let setupCompleteKey = "com.lstn2.setupComplete"
     static let setupVersionKey = "com.lstn2.setupVersion"
-    static let currentSetupVersion = 1
+    static let currentSetupVersion = 2
 
     static var hasCompletedSetup: Bool {
         let version = UserDefaults.standard.integer(forKey: setupVersionKey)
@@ -187,6 +189,6 @@ final class SetupState {
         backendDirectory = SetupState.resolveBackendDirectory()
         installOutput = ""
         detectedPythonVersion = nil
-        blackHoleDetected = false
+        blackHoleNeedsReboot = false
     }
 }
