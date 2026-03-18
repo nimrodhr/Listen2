@@ -13,6 +13,7 @@ struct ContentView: View {
     let state: AppState
     let webSocketClient: WebSocketClient
     let eventRouter: EventRouter
+    var onRerunWizard: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,7 +66,8 @@ struct ContentView: View {
                         },
                         onConnect: {
                             connectIfNeeded(reason: "settings.reconnect")
-                        }
+                        },
+                        onRerunWizard: onRerunWizard
                     )
                 case .activity:
                     ActivityLogView(entries: state.activity)
@@ -481,5 +483,5 @@ private struct LiveWorkspaceView: View {
 #Preview {
     let state = AppState()
     let client = WebSocketClient()
-    return ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state))
+    return ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state), onRerunWizard: nil)
 }

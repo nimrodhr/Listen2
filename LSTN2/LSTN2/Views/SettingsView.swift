@@ -7,6 +7,7 @@ struct SettingsView: View {
     let connectionStatus: AppState.ConnectionStatus
     let onSave: (AppState.Settings) -> Void
     let onConnect: () -> Void
+    let onRerunWizard: (() -> Void)?
 
     @State private var draft: AppState.Settings
     @State private var showAPIKey = false
@@ -18,7 +19,8 @@ struct SettingsView: View {
         systemDevices: [AppState.AudioDevice],
         connectionStatus: AppState.ConnectionStatus,
         onSave: @escaping (AppState.Settings) -> Void,
-        onConnect: @escaping () -> Void
+        onConnect: @escaping () -> Void,
+        onRerunWizard: (() -> Void)? = nil
     ) {
         _settings = settings
         _draft = State(initialValue: settings.wrappedValue)
@@ -27,6 +29,7 @@ struct SettingsView: View {
         self.connectionStatus = connectionStatus
         self.onSave = onSave
         self.onConnect = onConnect
+        self.onRerunWizard = onRerunWizard
     }
 
     var body: some View {
@@ -47,6 +50,7 @@ struct SettingsView: View {
                     openAISection
                     audioSection
                     backendSection
+                    setupSection
                 }
             }
 
@@ -232,6 +236,21 @@ struct SettingsView: View {
         case .disconnected: "Disconnected"
         case .connecting: "Connecting…"
         case .connected: "Connected"
+        }
+    }
+
+    // MARK: - Setup Section
+
+    private var setupSection: some View {
+        SettingsSection("Setup") {
+            SettingsRow("Setup Wizard") {
+                Button("Re-run Setup Wizard") {
+                    SetupState.resetSetupState()
+                    onRerunWizard?()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
         }
     }
 

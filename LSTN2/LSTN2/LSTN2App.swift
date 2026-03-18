@@ -8,17 +8,74 @@ private let log = Logger(subsystem: "com.lstn2.app", category: "AppLifecycle")
 struct LSTN2App: App {
     @State private var state = AppState()
     @State private var webSocketClient = WebSocketClient()
+    @State private var setupState = SetupState()
+    @State private var showWizard = !SetupState.hasCompletedSetup
+    @State private var isCheckingSetup = !SetupState.hasCompletedSetup
+    @State private var wizardRunID = UUID()
+    /// When true, the wizard was opened from Settings and should always be shown
+    /// even if all checks pass (so the user can review current status).
+    @State private var wizardFromSettings = false
     private let pythonManager = PythonManager()
 
     var body: some Scene {
         Window("LSTN2", id: "main") {
-            ContentView(
-                state: state,
-                webSocketClient: webSocketClient,
-                eventRouter: EventRouter(state: state)
-            )
-            .onAppear {
-                launchBackendIfNeeded()
+            Group {
+                if showWizard {
+                    if isCheckingSetup {
+                        ProgressView("Checking setup...")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .id(wizardRunID)
+                            .task {
+                                let manager = SetupManager(state: setupState)
+                                let allGood = await manager.runAllChecks()
+                                if allGood && !wizardFromSettings {
+                                    // Auto-dismiss only on initial launch, not when
+                                    // the user explicitly re-opened the wizard.
+                                    SetupState.markSetupComplete()
+                                    showWizard = false
+                                }
+                                isCheckingSetup = false
+                            }
+                    } else {
+                        SetupWizardView(
+                            setupState: setupState,
+                            setupManager: SetupManager(state: setupState),
+                            onComplete: {
+                                wizardFromSettings = false
+                                state.settings = AppState.Settings.loadFromDisk()
+                                showWizard = false
+                                launchBackendIfNeeded()
+                            }
+                        )
+                        .onAppear {
+                            resizeWindowForWizard()
+                        }
+                    }
+                } else {
+                    ContentView(
+                        state: state,
+                        webSocketClient: webSocketClient,
+                        eventRouter: EventRouter(state: state),
+                        onRerunWizard: {
+                            setupState.reset()
+                            wizardRunID = UUID()
+                            wizardFromSettings = true
+                            isCheckingSetup = true
+                            showWizard = true
+                        }
+                    )
+                    .onAppear {
+                        launchBackendIfNeeded()
+                    }
+                    .task {
+                        // On subsequent launches, run quick checks and show error if something is missing
+                        let manager = SetupManager(state: setupState)
+                        let errors = await manager.runQuickChecks()
+                        if let firstError = errors.first {
+                            state.errorMessage = firstError
+                        }
+                    }
+                }
             }
         }
         .defaultSize(width: 370, height: 800)
@@ -118,6 +175,18 @@ struct LSTN2App: App {
     private func hideMainWindow() {
         NSApplication.shared.windows.forEach { $0.orderOut(nil) }
         state.isWindowVisible = false
+    }
+
+    private func resizeWindowForWizard() {
+        guard let window = NSApplication.shared.windows.first(where: { $0.identifier?.rawValue.contains("main") ?? false }) ?? NSApplication.shared.windows.first else { return }
+        let wizardSize = NSSize(width: 370, height: 590)
+        let currentFrame = window.frame
+        // Keep the window centered at its current horizontal position, adjust height from top
+        let newOrigin = NSPoint(
+            x: currentFrame.origin.x,
+            y: currentFrame.origin.y + currentFrame.height - wizardSize.height
+        )
+        window.setFrame(NSRect(origin: newOrigin, size: wizardSize), display: true, animate: true)
     }
 
 }
