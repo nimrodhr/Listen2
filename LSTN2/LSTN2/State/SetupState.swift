@@ -104,7 +104,7 @@ final class SetupState {
     // Step-specific data
     var apiKeyInput: String = ""
     var uvPath: String = "\(NSHomeDirectory())/.local/bin/uv"
-    var backendDirectory: String = "\(NSHomeDirectory())/Documents/LSTN2/backend"
+    var backendDirectory: String = SetupState.resolveBackendDirectory()
     var installOutput: String = ""
     var detectedPythonVersion: String?
 
@@ -133,6 +133,35 @@ final class SetupState {
         log.info("Setup state reset — wizard will show on next relevant trigger")
     }
 
+    // MARK: - Backend Directory Resolution
+
+    /// Resolves the backend directory by searching known locations.
+    /// Priority: LSTN2_BACKEND_DIR env var → source tree (via #filePath) → ~/Documents/LSTN2/backend
+    static func resolveBackendDirectory(_ sourceFile: String = #filePath) -> String {
+        // 1. Environment variable override
+        if let envDir = ProcessInfo.processInfo.environment["LSTN2_BACKEND_DIR"],
+           FileManager.default.fileExists(atPath: envDir) {
+            return envDir
+        }
+
+        // 2. Derive from compile-time source file path
+        //    sourceFile is e.g. /Users/mark.s/Projects/Listen2/LSTN2/LSTN2/State/SetupState.swift
+        //    We need to walk up to the repo root and append "backend"
+        let sourceURL = URL(fileURLWithPath: sourceFile)
+        var dir = sourceURL.deletingLastPathComponent() // State/
+        // Walk up until we find a sibling "backend" directory
+        for _ in 0..<10 {
+            dir = dir.deletingLastPathComponent()
+            let candidate = dir.appendingPathComponent("backend").path
+            if FileManager.default.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        // 3. Fallback to conventional location
+        return "\(NSHomeDirectory())/Documents/LSTN2/backend"
+    }
+
     // MARK: - Helpers
 
     func advanceToFirstIncompleteStep() {
@@ -155,6 +184,7 @@ final class SetupState {
             envSubStatuses[sub] = .pending
         }
         apiKeyInput = ""
+        backendDirectory = SetupState.resolveBackendDirectory()
         installOutput = ""
         detectedPythonVersion = nil
         blackHoleDetected = false

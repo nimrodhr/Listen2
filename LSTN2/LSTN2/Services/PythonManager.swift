@@ -11,18 +11,12 @@ final class PythonManager {
     private var stderrPipe: Pipe?
 
     /// Initializes the manager with the backend project directory and uv binary path.
-    /// Uses `LSTN2_BACKEND_DIR` environment variable if set, otherwise derives from home directory.
+    /// Resolves the backend directory dynamically from the source tree location.
     init(
         backendDirectory: String? = nil,
         uvPath: String = "\(NSHomeDirectory())/.local/bin/uv"
     ) {
-        if let dir = backendDirectory {
-            self.backendDirectory = dir
-        } else if let envDir = ProcessInfo.processInfo.environment["LSTN2_BACKEND_DIR"] {
-            self.backendDirectory = envDir
-        } else {
-            self.backendDirectory = "\(NSHomeDirectory())/Documents/LSTN2/backend"
-        }
+        self.backendDirectory = backendDirectory ?? SetupState.resolveBackendDirectory()
         self.uvPath = uvPath
     }
 
