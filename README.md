@@ -11,6 +11,7 @@ A macOS meeting co-pilot that provides real-time transcription, automatic questi
 - **Transcript Persistence** — Sessions saved to disk with export support
 - **Activity Log** — Event tracking with 24-hour retention
 - **Menu Bar Access** — Quick toggle via the LSTN2 menu bar icon
+- **Guided Setup Wizard** — Step-by-step first-run wizard that installs prerequisites, configures audio, and validates the environment. Re-runnable from Settings.
 
 ## Architecture
 
@@ -31,9 +32,9 @@ The **SwiftUI frontend** handles UI and state management. The **Python backend**
 
 - macOS 14+
 - Xcode 16+
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/) (`~/.local/bin/uv`)
-- [BlackHole 2ch](https://existential.audio/blackhole/) for system audio capture
 - OpenAI API key
+
+> The setup wizard automatically installs [uv](https://docs.astral.sh/uv/), Python 3.13, backend dependencies, and guides you through [BlackHole 2ch](https://existential.audio/blackhole/) installation.
 
 ## Setup
 
@@ -43,17 +44,15 @@ The **SwiftUI frontend** handles UI and state management. The **Python backend**
    cd Listen2
    ```
 
-2. **Install backend dependencies:**
-   ```bash
-   cd backend
-   uv sync
-   ```
+2. **Run the app** — Open `LSTN2/LSTN2.xcodeproj` in Xcode and press Cmd+R.
 
-3. **Configure system audio** — Install [BlackHole 2ch](https://existential.audio/blackhole/) and create a Multi-Output Device in Audio MIDI Setup (combining your speakers/headphones + BlackHole 2ch).
+3. **Follow the Setup Wizard** — On first launch, a guided wizard walks you through:
+   - **Environment** — Installs `uv`, Python 3.13, and backend dependencies automatically
+   - **API Key** — Enter your OpenAI API key (can be skipped and added later in Settings)
+   - **BlackHole** — Guides you through installing [BlackHole 2ch](https://existential.audio/blackhole/) for system audio capture
+   - **Audio Config** — Instructions for creating a Multi-Output Device in Audio MIDI Setup
 
-4. **Run the app** — Open `LSTN2/LSTN2.xcodeproj` in Xcode and press Cmd+R. The app auto-launches the Python backend.
-
-5. **Add your API key** — Go to the Settings panel and enter your OpenAI API key.
+   The wizard detects what's already installed and skips completed steps. You can re-run it anytime from **Settings > Re-run Setup Wizard**.
 
 ## Running the Backend Manually
 
@@ -74,11 +73,24 @@ pytest tests/test_transcript_store.py -v  # Single test file
 
 ```
 LSTN2/LSTN2/                   # SwiftUI frontend
-├── LSTN2App.swift             # App entry point, lifecycle
+├── LSTN2App.swift             # App entry point, lifecycle, wizard flow
 ├── ContentView.swift          # Main window with panel navigation
-├── State/AppState.swift       # @Observable app state
-├── Services/                  # WebSocketClient, EventRouter, PythonManager
-├── Views/                     # Transcript, Questions, KB, Settings, Activity
+├── State/
+│   ├── AppState.swift         # @Observable app state
+│   └── SetupState.swift       # Setup wizard state & persistence
+├── Services/
+│   ├── WebSocketClient.swift  # WS connection with reconnect
+│   ├── EventRouter.swift      # Event parsing & state updates
+│   ├── PythonManager.swift    # Backend subprocess management
+│   ├── SetupManager.swift     # Prerequisite checks & installation
+│   └── AudioDeviceService.swift # Audio device enumeration
+├── Views/
+│   ├── Setup/                 # Setup wizard UI
+│   │   ├── SetupWizardView.swift
+│   │   ├── StepProgressBar.swift
+│   │   └── Steps/             # Per-step views (Environment, API Key, BlackHole, Audio)
+│   ├── SettingsView.swift     # Settings panel with re-run wizard button
+│   └── ...                    # Transcript, Questions, KB, Activity views
 └── Models/Protocol.swift      # WebSocket protocol types
 
 backend/                       # Python backend
