@@ -125,6 +125,37 @@ final class PythonManager {
         process?.isRunning == true
     }
 
+    /// Waits until the backend is accepting TCP connections on the given port,
+    /// or until the timeout elapses. Returns `true` if the port became reachable.
+    func waitUntilReady(port: UInt16 = 8765, timeout: TimeInterval = 10) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isPortOpen(port: port) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        return false
+    }
+
+    private func isPortOpen(port: UInt16) -> Bool {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.connect(sock, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
+    }
+
     /// Kill any stale backend processes listening on the WebSocket port (8765).
     /// This handles orphaned processes from a previous app session that crashed
     /// or was force-quit without cleanly terminating the backend.
@@ -149,8 +180,35 @@ final class PythonManager {
 
         for pidStr in output.split(separator: "\n") {
             guard let pid = Int32(pidStr.trimmingCharacters(in: .whitespaces)) else { continue }
-            log.warning("Killing stale backend process on port 8765 (pid=\(pid))")
-            kill(pid, SIGTERM)
+
+            // Verify the process is actually a Python/uv backend before killing
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            ps.arguments = ["-p", "\(pid)", "-o", "comm="]
+            let psPipe = Pipe()
+            ps.standardOutput = psPipe
+            ps.standardError = FileHandle.nullDevice
+
+            do {
+                try ps.run()
+                ps.waitUntilExit()
+            } catch {
+                continue
+            }
+
+            let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+            guard let comm = String(data: psData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+                  !comm.isEmpty
+            else { continue }
+
+            if comm.contains("python") || comm.contains("uv") {
+                log.warning("Killing stale backend process on port 8765 (pid=\(pid), comm=\(comm))")
+                kill(pid, SIGTERM)
+            } else {
+                log.info("Skipping non-backend process on port 8765 (pid=\(pid), comm=\(comm))")
+            }
         }
 
         // Brief wait for processes to exit

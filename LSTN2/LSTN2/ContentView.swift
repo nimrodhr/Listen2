@@ -9,10 +9,12 @@ struct ContentView: View {
     }
 
     @State private var activePanel: Panel = .live
+    @State private var systemAudioStreamTask: Task<Void, Never>?
 
     let state: AppState
     let webSocketClient: WebSocketClient
     let eventRouter: EventRouter
+    let systemAudioCapture: SystemAudioCapture
     var onRerunWizard: (() -> Void)?
 
     var body: some View {
@@ -45,7 +47,6 @@ struct ContentView: View {
                             set: { state.settings = $0 }
                         ),
                         micDevices: state.availableMicDevices,
-                        systemDevices: state.availableSystemDevices,
                         connectionStatus: state.connectionStatus,
                         onSave: { saved in
                             let oldKey = state.settings.apiKey
@@ -119,7 +120,14 @@ struct ContentView: View {
             }
 
             refreshAudioDevices()
-            connectIfNeeded(reason: "view_appeared")
+            if state.backendReady {
+                connectIfNeeded(reason: "view_appeared")
+            }
+        }
+        .onChange(of: state.backendReady) { _, ready in
+            if ready {
+                connectIfNeeded(reason: "backend_ready")
+            }
         }
         .onChange(of: activePanel) { _, newValue in
             state.logFrontendEvent("panel.changed", detail: newValue.rawValue)
@@ -228,6 +236,9 @@ struct ContentView: View {
             // --- Stopping: always allowed, even if disconnected ---
             if state.isRecording {
                 state.logFrontendEvent("recording.stop.requested")
+                systemAudioStreamTask?.cancel()
+                systemAudioStreamTask = nil
+                systemAudioCapture.stopCapture()
                 if state.connectionStatus == .connected {
                     Task {
                         do {
@@ -261,12 +272,33 @@ struct ContentView: View {
                 activePanel = .live
             }
             Task {
+                // Request system audio capture permission (triggers macOS prompt on first use)
+                let permitted = await systemAudioCapture.requestPermission()
+                if !permitted {
+                    state.errorMessage = "System audio capture permission denied. Grant permission in System Settings > Privacy & Security > Screen & System Audio Recording."
+                    state.logFrontendEvent("recording.system_audio.permission_denied", level: .error)
+                }
+
+                // Set up audio streaming callback BEFORE starting capture
+                let ws = webSocketClient
+                systemAudioCapture.onAudioChunk = { chunk in
+                    Task { try? await ws.sendBinary(chunk) }
+                }
+
+                // Start system audio capture via Core Audio Taps
+                if permitted {
+                    do {
+                        try systemAudioCapture.startCapture()
+                    } catch {
+                        state.errorMessage = "Failed to capture system audio: \(error.localizedDescription)"
+                        state.logFrontendEvent("recording.system_audio.failed", detail: error.localizedDescription, level: .error)
+                    }
+                }
+
+                // Send start_recording command (mic device only)
                 var payload: [String: Any] = [:]
                 if let micID = state.settings.micDeviceID {
                     payload["mic_device_id"] = micID
-                }
-                if let sysID = state.settings.systemDeviceID {
-                    payload["system_device_id"] = sysID
                 }
                 let command = ClientCommand(command: .startRecording, payload: payload.isEmpty ? nil : payload)
                 do {
@@ -384,7 +416,7 @@ struct ContentView: View {
             return
         }
 
-        webSocketClient.connect(url: url, apiKey: state.settings.apiKey)
+        webSocketClient.connect(url: url, authToken: state.wsToken)
         state.logFrontendEvent("connect.requested", detail: "\(reason) -> \(url.absoluteString)")
     }
 
@@ -486,5 +518,5 @@ private struct LiveWorkspaceView: View {
 #Preview {
     let state = AppState()
     let client = WebSocketClient()
-    return ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state), onRerunWizard: nil)
+    ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state), systemAudioCapture: SystemAudioCapture(), onRerunWizard: nil)
 }

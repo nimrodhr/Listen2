@@ -141,19 +141,16 @@ final class AppState {
     struct AudioDevice: Identifiable, Hashable {
         let id: Int
         let name: String
-        let isBlackHole: Bool
 
-        init(id: Int, name: String, isBlackHole: Bool = false) {
+        init(id: Int, name: String) {
             self.id = id
             self.name = name
-            self.isBlackHole = isBlackHole
         }
     }
 
     struct Settings: Hashable {
         var apiKey: String = ""
         var micDeviceID: Int? = nil
-        var systemDeviceID: Int? = nil
         var transcriptionModel: String = "gpt-4o-transcribe"
         var qaModel: String = "gpt-4o-mini"
 
@@ -172,7 +169,6 @@ final class AppState {
             }
             if let audio = json["audio"] as? [String: Any] {
                 s.micDeviceID = audio["mic_device_id"] as? Int
-                s.systemDeviceID = audio["system_device_id"] as? Int
             }
             if let models = json["models"] as? [String: Any] {
                 if let t = models["transcription"] as? String { s.transcriptionModel = t }
@@ -194,10 +190,11 @@ final class AppState {
 
     var settings = Settings.loadFromDisk()
     var availableMicDevices: [AudioDevice] = []
-    var availableSystemDevices: [AudioDevice] = []
     var isWindowVisible = true
 
     var errorMessage: String?
+    var backendReady = false
+    var wsToken: String?
 
     var kbSources: [KBSource] = []
     var kbStatus: KBStatus = KBStatus()
@@ -292,9 +289,8 @@ final class AppState {
         appendActivity(category: "backend", level: level, message: message)
     }
 
-    func updateAvailableDevices(mics: [AudioDevice], system: [AudioDevice]) {
+    func updateAvailableDevices(mics: [AudioDevice]) {
         availableMicDevices = mics
-        availableSystemDevices = system
 
         // Auto-select first device if current selection is invalid
         if let currentMic = settings.micDeviceID, !mics.contains(where: { $0.id == currentMic }) {
@@ -302,22 +298,11 @@ final class AppState {
         } else if settings.micDeviceID == nil {
             settings.micDeviceID = mics.first?.id
         }
-
-        if let currentSys = settings.systemDeviceID, !system.contains(where: { $0.id == currentSys }) {
-            settings.systemDeviceID = system.first?.id
-        } else if settings.systemDeviceID == nil {
-            settings.systemDeviceID = system.first?.id
-        }
     }
 
     func micDeviceName(for id: Int?) -> String {
         guard let id else { return "Not selected" }
         return availableMicDevices.first(where: { $0.id == id })?.name ?? "Device \(id)"
-    }
-
-    func systemDeviceName(for id: Int?) -> String {
-        guard let id else { return "Not selected" }
-        return availableSystemDevices.first(where: { $0.id == id })?.name ?? "Device \(id)"
     }
 
     /// Builds the settings dict for the backend `update_settings` command.
@@ -331,7 +316,6 @@ final class AppState {
             ],
             "audio": [
                 "mic_device_id": settings.micDeviceID as Any,
-                "system_device_id": settings.systemDeviceID as Any,
             ],
         ]
         // Only send API key if the frontend actually has one

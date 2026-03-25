@@ -11,7 +11,7 @@ final class WebSocketClient: @unchecked Sendable {
     private var _task: URLSessionWebSocketTask?
     private var _session: URLSession?
     private var _lastURL: URL?
-    private var _lastAPIKey: String?
+    private var _lastAuthToken: String?
     private var _intentionalDisconnect = false
     private var _reconnectWork: DispatchWorkItem?
     private var _reconnectAttempt = 0
@@ -36,20 +36,20 @@ final class WebSocketClient: @unchecked Sendable {
         set { lock.withLock { _session = newValue } }
     }
 
-    func connect(url: URL, apiKey: String?) {
+    func connect(url: URL, authToken: String?) {
         log.info("Connect requested: \(url.absoluteString)")
         onLifecycleEvent?("connect.requested \(url.absoluteString)")
         let connID: UInt64 = lock.withLock {
             _intentionalDisconnect = false
             _lastURL = url
-            _lastAPIKey = apiKey
+            _lastAuthToken = authToken
             _reconnectAttempt = 0
             _reconnectWork?.cancel()
             _reconnectWork = nil
             _connectionID += 1
             return _connectionID
         }
-        performConnect(url: url, apiKey: apiKey, connID: connID)
+        performConnect(url: url, authToken: authToken, connID: connID)
     }
 
     func disconnect() {
@@ -88,9 +88,17 @@ final class WebSocketClient: @unchecked Sendable {
         try await task.send(.string(text))
     }
 
+    /// Send raw binary data (e.g. PCM audio chunks) over the WebSocket.
+    func sendBinary(_ data: Data) async throws {
+        guard let task else {
+            throw URLError(.notConnectedToInternet)
+        }
+        try await task.send(.data(data))
+    }
+
     // MARK: - Private
 
-    private func performConnect(url: URL, apiKey: String?, connID: UInt64) {
+    private func performConnect(url: URL, authToken: String?, connID: UInt64) {
         // Bail out if a newer connect() call has superseded this one.
         let isCurrent: Bool = lock.withLock { _connectionID == connID }
         guard isCurrent else { return }
@@ -111,8 +119,8 @@ final class WebSocketClient: @unchecked Sendable {
         self.session = socketSession
 
         var request = URLRequest(url: url)
-        if let apiKey, !apiKey.isEmpty {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let authToken, !authToken.isEmpty {
+            request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         }
 
         let webSocketTask = socketSession.webSocketTask(with: request)
@@ -200,10 +208,10 @@ final class WebSocketClient: @unchecked Sendable {
         }
         guard shouldReconnect else { return }
 
-        let (url, apiKey, attempt): (URL, String?, Int) = lock.withLock {
+        let (url, authToken, attempt): (URL, String?, Int) = lock.withLock {
             let a = _reconnectAttempt
             _reconnectAttempt += 1
-            return (_lastURL!, _lastAPIKey, a)
+            return (_lastURL!, _lastAuthToken, a)
         }
 
         let delay = min(baseReconnectDelay * pow(2.0, Double(attempt)), maxReconnectDelay)
@@ -216,7 +224,7 @@ final class WebSocketClient: @unchecked Sendable {
             let stillCurrent: Bool = self.lock.withLock { self._connectionID == connID }
             guard stillCurrent else { return }
             self.onLifecycleEvent?("reconnect.attempting attempt=\(attempt + 1)")
-            self.performConnect(url: url, apiKey: apiKey, connID: connID)
+            self.performConnect(url: url, authToken: authToken, connID: connID)
         }
         lock.withLock {
             _reconnectWork?.cancel()

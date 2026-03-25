@@ -1,10 +1,9 @@
-"""WebSocket server bridging the Python backend to the macOS SwiftUI frontend."""
+"""WebSocket server bridging the Python backend to the Electron frontend."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +11,7 @@ import websockets
 from websockets.asyncio.server import Server, ServerConnection
 
 from listen.config import Settings, save_settings
-from listen.audio.devices import list_input_devices, list_loopback_devices, list_output_devices
+from listen.audio.devices import list_input_devices
 from listen.audio.capture import AudioCapture
 from listen.transcription.session_pair import TranscriptionSessionPair
 from listen.transcription.transcript_store import TranscriptStore, TranscriptEntry
@@ -30,13 +29,11 @@ from listen.server.protocol import (
     RecordingStateEvent,
     SettingsUpdatedEvent,
     AudioDevicesEvent,
-    AudioSetupStatusEvent,
     KBStatusEvent,
     KBIngestionProgressEvent,
     KBQueryResultsEvent,
     TranscriptDeltaEvent,
     TranscriptCompletedEvent,
-    TranscriptCorrectedEvent,
     QuestionDetectedEvent,
     QuestionAnsweredEvent,
     QuestionNoAnswerEvent,
@@ -45,18 +42,17 @@ from listen.server.protocol import (
     parse_command,
 )
 from listen.server.handlers import COMMAND_HANDLERS
-from listen.transcription.text_normalizer import TextNormalizer
-from listen.transcription.transcript_corrector import TranscriptCorrector
 from listen.activity import ActivityLog, ActivityLogEntry as ALogEntry
 
 logger = logging.getLogger("listen.server.ws_server")
 
 
 class ListenWSServer:
-    """WebSocket server that accepts one client (the macOS SwiftUI frontend)."""
+    """WebSocket server that accepts one client (the Electron renderer)."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, ws_token: str = "") -> None:
         self.settings = settings
+        self._ws_token = ws_token
         self._server: Optional[Server] = None
         self._client: Optional[ServerConnection] = None
         self._is_recording = False
@@ -68,16 +64,12 @@ class ListenWSServer:
         self._transcript_persistence = TranscriptPersistence()
         self._audio_feed_tasks: list[asyncio.Task] = []
         self._detection_tasks: list[asyncio.Task] = []
-        self._correction_tasks: list[asyncio.Task] = []
-
-        # Text normalization
-        self._normalizer: Optional[TextNormalizer] = None
-        self._init_normalizer()
+        # System audio arrives as binary WebSocket frames from the Swift frontend
+        self._system_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
 
         # Intelligence components
         self._question_detector: Optional[QuestionDetector] = None
         self._rag_engine: Optional[RAGEngine] = None
-        self._transcript_corrector: Optional[TranscriptCorrector] = None
         self._vector_store: Optional[VectorStore] = None
         self._active_detection_tasks: int = 0
 
@@ -103,7 +95,6 @@ class ListenWSServer:
                 persist_path=self.settings.knowledge_base.chromadb_path,
                 embedding_model=self.settings.models.embedding,
                 api_key=self.settings.api_keys.openai,
-                collection_name=self.settings.knowledge_base.default_collection,
             )
             self._activity_log.add("knowledge", "info", "Vector store initialized")
         except Exception as e:
@@ -134,13 +125,6 @@ class ListenWSServer:
             except RuntimeError:
                 pass  # No running event loop — skip forwarding
 
-    def _init_normalizer(self) -> None:
-        """Initialize or re-initialize the text normalizer from current settings."""
-        self._normalizer = TextNormalizer(
-            config=self.settings.normalization,
-            glossary=self.settings.transcription.glossary,
-        )
-
     def _init_intelligence(self) -> None:
         """Initialize question detector and RAG engine based on current settings."""
         try:
@@ -168,29 +152,10 @@ class ListenWSServer:
                     llm_client=rag_llm,
                     vector_store=self._vector_store,
                     top_k=self.settings.rag.top_k,
-                    similarity_threshold=self.settings.rag.similarity_threshold,
-                    use_reranker=self.settings.rag.use_reranker,
-                    reranker_candidates=self.settings.rag.reranker_candidates,
-                    reranker_top_n=self.settings.rag.reranker_top_n,
-                    hybrid_search=self.settings.rag.hybrid_search,
-                    cache_ttl_seconds=self.settings.rag.cache_ttl_seconds,
-                    query_logging=self.settings.rag.query_logging,
                 )
-            # Create transcript corrector (if enabled)
-            if self.settings.correction.enabled:
-                correction_llm = create_llm_client(
-                    model_name=self.settings.correction.model,
-                    openai_api_key=self.settings.api_keys.openai,
-                )
-                self._transcript_corrector = TranscriptCorrector(
-                    llm_client=correction_llm,
-                    glossary=self.settings.transcription.glossary,
-                )
-
             self._activity_log.add("intelligence", "info", "Intelligence modules initialized", {
                 "question_detection_model": qd_model,
                 "rag_model": self.settings.models.rag_answer,
-                "correction_enabled": self.settings.correction.enabled,
             })
         except Exception as e:
             logger.warning(f"Failed to initialize intelligence: {e}")
@@ -224,16 +189,11 @@ class ListenWSServer:
 
     async def _on_transcript_completed(self, entry: TranscriptEntry) -> None:
         """Forward completed transcript to the frontend, then check for questions."""
-        # Apply text normalization before sending to frontend
-        display_text = entry.text
-        if self._normalizer:
-            display_text = self._normalizer.normalize(display_text)
-
         await self.send(
             TranscriptCompletedEvent(
                 turn_id=entry.turn_id,
                 speaker=entry.speaker,
-                final_text=display_text,
+                final_text=entry.text,
                 timestamp=entry.timestamp,
             )
         )
@@ -243,20 +203,7 @@ class ListenWSServer:
             "speaker": entry.speaker,
             "turn_id": entry.turn_id,
             "preview": preview,
-            "confidence": entry.confidence,
         })
-
-        # Async LLM correction for low-confidence turns (non-blocking)
-        if self._transcript_corrector:
-            should_correct = self.settings.correction.correct_all or (
-                entry.confidence < self.settings.correction.confidence_threshold
-            )
-            if should_correct:
-                task = asyncio.create_task(
-                    self._correct_transcript(entry.turn_id, entry.text, entry.speaker, entry.confidence)
-                )
-                self._correction_tasks.append(task)
-                task.add_done_callback(lambda t: self._correction_tasks.remove(t) if t in self._correction_tasks else None)
 
         # Check for questions from either speaker (limit concurrent detections)
         if self._question_detector and self._active_detection_tasks < 2:
@@ -302,16 +249,12 @@ class ListenWSServer:
                         self._activity_log.add("intelligence", "info", f"Answer generated for question", {
                             "question_id": question.question_id,
                             "sources_count": len(result.sources),
-                            "confidence": result.confidence,
-                            "citations": result.citations,
                         })
                         await self.send(
                             QuestionAnsweredEvent(
                                 question_id=question.question_id,
                                 answer_text=result.answer,
                                 sources=result.sources,
-                                confidence=result.confidence,
-                                citations=result.citations,
                             )
                         )
                     else:
@@ -337,46 +280,11 @@ class ListenWSServer:
                 logger.error(f"Question detection/answer error: {e}", exc_info=True)
                 self._activity_log.add("error", "error", f"Question detection error: {e}")
         finally:
-            self._active_detection_tasks = max(0, self._active_detection_tasks - 1)
-
-    async def _correct_transcript(
-        self, turn_id: str, text: str, speaker: str, confidence: float
-    ) -> None:
-        """Run async LLM correction on a transcript turn."""
-        try:
-            # Build context from recent turns
-            recent = await self._transcript_store.get_recent(5)
-            context_lines = []
-            for e in recent:
-                label = "Me" if e.speaker == "me" else "Them"
-                context_lines.append(f"{label}: {e.text}")
-            context = "\n".join(context_lines)
-
-            corrected = await self._transcript_corrector.correct(
-                text=text, context=context, confidence=confidence
-            )
-            if corrected:
-                # Update the store entry via public API
-                await self._transcript_store.update_entry_text(turn_id, corrected)
-
-                # Notify frontend of the correction
-                await self.send(
-                    TranscriptCorrectedEvent(
-                        turn_id=turn_id,
-                        corrected_text=corrected,
-                        original_text=text,
-                        timestamp=time.time(),
-                    )
-                )
-                self._activity_log.add("transcription", "info", "Transcript corrected", {
-                    "turn_id": turn_id,
-                    "confidence": confidence,
-                })
-        except Exception as e:
-            logger.error(f"Transcript correction error: {e}", exc_info=True)
+            self._active_detection_tasks -= 1
 
     async def _health_ping_loop(self) -> None:
-        """Send periodic pings to keep the WebSocket connection alive."""
+        """Send periodic pings to keep the connection alive and let frontend detect staleness."""
+        import time
         while self._client is not None:
             try:
                 await self.send(PongEvent(server_time=time.time()))
@@ -387,20 +295,23 @@ class ListenWSServer:
     async def _handle_client(self, websocket: ServerConnection) -> None:
         """Handle a single client connection."""
         if self._client is not None:
-            logger.warning("Replacing stale client connection with new one")
-            try:
-                await self._client.close(1012, "Replaced by new client")
-            except Exception:
-                pass
-            self._client = None
+            logger.warning("Rejecting additional client connection")
+            await websocket.close(1013, "Only one client allowed")
+            return
 
-        # Validate auth token: reject only when both sides have keys and they differ.
-        # Allow empty auth (frontend may not have the key yet on first launch).
+        # Reject browser-originated connections (Origin header = CSWSH indicator)
+        origin = websocket.request.headers.get("Origin", "")
+        if origin:
+            logger.warning(f"Rejecting browser connection (Origin: {origin})")
+            await websocket.close(1008, "Browser connections not allowed")
+            return
+
+        # Validate per-session auth token (generated on backend startup)
         auth_header = websocket.request.headers.get("Authorization", "")
-        client_key = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
-        server_key = self.settings.api_keys.openai or ""
-        if client_key and server_key and client_key != server_key:
-            logger.warning("Rejecting client: authorization mismatch")
+        client_token = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
+
+        if self._ws_token and client_token != self._ws_token:
+            logger.warning("Rejecting client: invalid or missing auth token")
             await websocket.close(1008, "Unauthorized")
             return
 
@@ -418,7 +329,14 @@ class ListenWSServer:
             ping_task = asyncio.create_task(self._health_ping_loop())
 
             async for message in websocket:
-                await self._handle_message(str(message))
+                if isinstance(message, bytes):
+                    # Binary frame = system audio PCM from Swift frontend
+                    try:
+                        self._system_audio_queue.put_nowait(message)
+                    except asyncio.QueueFull:
+                        pass  # Drop frame rather than block
+                else:
+                    await self._handle_message(str(message))
 
         except websockets.ConnectionClosed:
             logger.info("Client disconnected")
@@ -451,7 +369,7 @@ class ListenWSServer:
                 )
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
-            await self.send_error("HANDLER_ERROR", str(e), "server")
+            await self.send_error("HANDLER_ERROR", "An internal error occurred while processing the command.", "server")
 
     async def send(self, event: object) -> None:
         """Send a protocol event to the connected client."""
@@ -490,20 +408,23 @@ class ListenWSServer:
 
     async def start_recording(
         self,
-        mic_device_id: Optional[int],
-        system_device_id: Optional[int],
+        mic_device_id: Optional[int] = None,
     ) -> None:
-        """Start audio capture and transcription pipeline."""
+        """Start audio capture and transcription pipeline.
+
+        Mic audio is captured locally via sounddevice/PortAudio.
+        System audio arrives as binary WebSocket frames from the Swift frontend
+        (captured via Core Audio Taps) and is fed from _system_audio_queue.
+        """
         if self._is_recording:
             return
 
         mic_id = mic_device_id if mic_device_id is not None else self.settings.audio.mic_device_id
-        sys_id = system_device_id if system_device_id is not None else self.settings.audio.system_device_id
 
-        if mic_id is None or sys_id is None:
+        if mic_id is None:
             await self.send_error(
                 "AUDIO_DEVICE_NOT_CONFIGURED",
-                "Please select both mic and system audio devices in settings",
+                "Please select a microphone device in settings",
                 "audio",
             )
             return
@@ -525,10 +446,16 @@ class ListenWSServer:
             # Initialize intelligence modules
             self._init_intelligence()
 
-            # Create audio capture
+            # Drain any stale system audio frames from previous session
+            while not self._system_audio_queue.empty():
+                try:
+                    self._system_audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            # Create microphone audio capture (system audio comes via WebSocket binary)
             self._audio_capture = AudioCapture(
                 mic_device_id=mic_id,
-                system_device_id=sys_id,
                 loop=loop,
                 chunk_duration_ms=self.settings.audio.chunk_duration_ms,
             )
@@ -542,13 +469,15 @@ class ListenWSServer:
             )
             self._transcription.on_error = self._on_openai_error
 
-            # Start audio capture
+            # Start microphone audio capture
             self._audio_capture.start()
 
             # Start transcription sessions
             await self._transcription.start()
 
-            # Start audio feed tasks
+            # Start audio feed tasks:
+            # - mic: from local sounddevice capture queue
+            # - system: from WebSocket binary frames queue
             self._audio_feed_tasks = [
                 asyncio.create_task(
                     self._feed_audio_loop(
@@ -559,7 +488,7 @@ class ListenWSServer:
                 ),
                 asyncio.create_task(
                     self._feed_audio_loop(
-                        self._audio_capture.system_stream.queue,
+                        self._system_audio_queue,
                         self._transcription.feed_system_audio,
                     ),
                     name="feed_system_audio",
@@ -567,8 +496,6 @@ class ListenWSServer:
             ]
 
             self._is_recording = True
-            # Report recording started, but don't claim OpenAI is connected
-            # until the sessions have actually established their connections
             mic_connected = (
                 self._transcription is not None
                 and self._transcription.mic_session is not None
@@ -591,31 +518,13 @@ class ListenWSServer:
             logger.info("Recording started")
             self._activity_log.add("recording", "info", "Recording started", {
                 "mic_device_id": mic_id,
-                "system_device_id": sys_id,
             })
 
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
             self._activity_log.add("error", "error", f"Recording failed to start: {e}")
-            # Clean up audio capture directly since stop_recording() may
-            # early-return if _is_recording was never set to True
-            if self._audio_capture:
-                try:
-                    self._audio_capture.stop()
-                except Exception:
-                    pass
-                self._audio_capture = None
-            if self._transcription:
-                try:
-                    await self._transcription.stop()
-                except Exception:
-                    pass
-                self._transcription = None
-            for task in self._audio_feed_tasks:
-                task.cancel()
-            self._audio_feed_tasks.clear()
-            self._is_recording = False
-            await self.send_error("RECORDING_START_FAILED", str(e), "audio")
+            await self.stop_recording()
+            await self.send_error("RECORDING_START_FAILED", "Failed to start recording. Check audio device and API key configuration.", "audio")
 
     async def _feed_audio_loop(
         self,
@@ -654,13 +563,6 @@ class ListenWSServer:
         self._detection_tasks.clear()
         self._active_detection_tasks = 0
 
-        # Cancel in-flight correction tasks
-        for task in self._correction_tasks:
-            task.cancel()
-        if self._correction_tasks:
-            await asyncio.gather(*self._correction_tasks, return_exceptions=True)
-        self._correction_tasks.clear()
-
         try:
             if self._transcription:
                 await self._transcription.stop()
@@ -679,80 +581,13 @@ class ListenWSServer:
 
         try:
             # Save transcript to disk
-            await self._transcript_persistence.end_session(self._transcript_store)
+            self._transcript_persistence.end_session(self._transcript_store)
         except Exception as e:
             logger.error(f"Error saving transcript: {e}", exc_info=True)
-
-        # Auto-ingest transcript into knowledge base
-        if (
-            self.settings.knowledge_base.auto_ingest_transcripts
-            and self._vector_store
-        ):
-            try:
-                await self._ingest_transcript_to_kb()
-            except Exception as e:
-                logger.error(f"Error ingesting transcript to KB: {e}", exc_info=True)
-                self._activity_log.add(
-                    "knowledge", "warning", f"Transcript ingestion failed: {e}"
-                )
 
         await self.send(RecordingStateEvent(is_recording=False))
         logger.info("Recording stopped")
         self._activity_log.add("recording", "info", "Recording stopped")
-
-    async def _ingest_transcript_to_kb(self) -> None:
-        """Ingest the current transcript session into the knowledge base."""
-        from datetime import datetime
-        from langchain_core.documents import Document
-
-        entries = await self._transcript_store.get_recent(n=10000)
-        finalized = [e for e in entries if e.is_final and e.text.strip()]
-        if not finalized:
-            return
-
-        session_id = self._transcript_persistence._current_session_id or "unknown"
-        session_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        # Format transcript as a document
-        lines = []
-        start_ts = finalized[0].timestamp if finalized else time.time()
-        for entry in finalized:
-            elapsed = entry.timestamp - start_ts
-            minutes = int(elapsed // 60)
-            seconds = int(elapsed % 60)
-            speaker = "Me" if entry.speaker == "me" else "Them"
-            lines.append(f"[{minutes:02d}:{seconds:02d}] {speaker}: {entry.text}")
-
-        full_text = "\n".join(lines)
-        source = f"transcript_{session_id}"
-        file_name = f"Meeting {session_date}"
-
-        doc = Document(
-            page_content=full_text,
-            metadata={
-                "source": source,
-                "file_name": file_name,
-                "type": "transcript",
-            },
-        )
-
-        chunks = chunk_documents(
-            [doc],
-            chunk_size=self.settings.knowledge_base.chunk_size,
-            chunk_overlap=self.settings.knowledge_base.chunk_overlap,
-            size_unit=self.settings.knowledge_base.chunk_size_unit,
-        )
-        await asyncio.to_thread(self._vector_store.add_documents, chunks)
-
-        self._activity_log.add("knowledge", "info", f"Transcript ingested to KB", {
-            "session_id": session_id,
-            "entries": len(finalized),
-            "chunks": len(chunks),
-        })
-        logger.info(
-            f"Transcript {session_id} ingested to KB: "
-            f"{len(finalized)} entries, {len(chunks)} chunks"
-        )
 
     def _redacted_settings(self) -> dict:
         """Return settings dict with API keys masked."""
@@ -767,11 +602,10 @@ class ListenWSServer:
 
     async def update_settings(self, settings_data: dict) -> None:
         """Update and persist settings, merging with existing settings."""
-        old_chunk_size = self.settings.knowledge_base.chunk_size
-        old_chunk_overlap = self.settings.knowledge_base.chunk_overlap
-
         # Merge with existing settings to avoid resetting unset fields
         current = self.settings.model_dump()
+        if "settings" in settings_data:
+            settings_data = settings_data["settings"]
         for key, value in settings_data.items():
             if isinstance(value, dict) and key in current and isinstance(current[key], dict):
                 current[key].update(value)
@@ -782,27 +616,6 @@ class ListenWSServer:
         await self.send(
             SettingsUpdatedEvent(settings=self._redacted_settings())
         )
-
-        # Warn if chunking config changed — existing KB needs re-ingestion
-        new_chunk_size = self.settings.knowledge_base.chunk_size
-        new_chunk_overlap = self.settings.knowledge_base.chunk_overlap
-        if new_chunk_size != old_chunk_size or new_chunk_overlap != old_chunk_overlap:
-            logger.warning(
-                f"Chunk settings changed (size: {old_chunk_size}->{new_chunk_size}, "
-                f"overlap: {old_chunk_overlap}->{new_chunk_overlap}). "
-                "Knowledge base should be re-ingested for changes to take effect."
-            )
-            self._activity_log.add(
-                "knowledge", "warning",
-                "Chunk settings changed — re-ingest knowledge base for changes to take effect",
-                {"old_chunk_size": old_chunk_size, "new_chunk_size": new_chunk_size,
-                 "old_chunk_overlap": old_chunk_overlap, "new_chunk_overlap": new_chunk_overlap},
-            )
-
-        # Re-initialize normalizer and intelligence with updated settings
-        self._init_normalizer()
-        self._init_intelligence()
-
         self._activity_log.add("settings", "info", "Settings updated")
 
     async def send_audio_devices(self) -> None:
@@ -813,38 +626,13 @@ class ListenWSServer:
                 "name": d.name,
                 "channels": d.channels,
                 "sample_rate": d.sample_rate,
-                "is_blackhole": d.is_blackhole,
             }
             for d in list_input_devices()
         ]
-        output_devs = [
-            {
-                "id": d.id,
-                "name": d.name,
-                "channels": d.channels,
-                "sample_rate": d.sample_rate,
-                "is_blackhole": d.is_blackhole,
-            }
-            for d in list_loopback_devices()
-        ]
         await self.send(
-            AudioDevicesEvent(input_devices=input_devs, output_devices=output_devs)
+            AudioDevicesEvent(input_devices=input_devs, output_devices=[])
         )
-        self._activity_log.add("audio", "debug", f"Audio devices enumerated ({len(input_devs)} input, {len(output_devs)} output)")
-
-    async def check_audio_setup(self) -> None:
-        """Check and report BlackHole audio setup status."""
-        from listen.audio.setup_assistant import check_audio_setup
-
-        status = check_audio_setup()
-        await self.send(
-            AudioSetupStatusEvent(
-                blackhole_installed=status.blackhole_installed,
-                multi_output_configured=status.multi_output_configured,
-                blackhole_device_id=status.blackhole_device_id,
-                instructions=status.instructions,
-            )
-        )
+        self._activity_log.add("audio", "debug", f"Audio devices enumerated ({len(input_devs)} input)")
 
     async def ingest_kb(self, directory: str = "", files: list[str] | None = None) -> None:
         """Ingest knowledge base documents from a directory or individual files."""
@@ -854,24 +642,11 @@ class ListenWSServer:
 
         ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
 
-        # Path validation: restrict to user's home directory
-        home_dir = Path.home().resolve()
-
-        def _is_safe_path(p: Path) -> bool:
-            try:
-                resolved = p.resolve()
-                return str(resolved).startswith(str(home_dir))
-            except (OSError, ValueError):
-                return False
-
         # Build file list from either directory scan or explicit file paths
         file_paths: list[Path] = []
         if files:
             for f in files:
                 p = Path(f).resolve()
-                if not _is_safe_path(p):
-                    logger.warning(f"Path outside home directory, skipping: {f}")
-                    continue
                 if not p.is_file():
                     logger.warning(f"File not found, skipping: {f}")
                     continue
@@ -880,10 +655,7 @@ class ListenWSServer:
                     continue
                 file_paths.append(p)
         elif directory:
-            dir_path = Path(directory).resolve()
-            if not _is_safe_path(dir_path):
-                await self.send_error("KB_PATH_RESTRICTED", "Path must be under user home directory", "kb")
-                return
+            dir_path = Path(directory)
             if not dir_path.is_dir():
                 await self.send_error("KB_DIR_NOT_FOUND", f"Directory not found: {directory}", "kb")
                 return
@@ -920,18 +692,14 @@ class ListenWSServer:
                     )
                 )
 
-                docs = load_document(
-                    str(file_path),
-                    preprocess=self.settings.knowledge_base.preprocess_documents,
-                )
+                docs = load_document(str(file_path))
                 if docs:
                     chunks = chunk_documents(
                         docs,
                         chunk_size=self.settings.knowledge_base.chunk_size,
                         chunk_overlap=self.settings.knowledge_base.chunk_overlap,
-                        size_unit=self.settings.knowledge_base.chunk_size_unit,
                     )
-                    await asyncio.to_thread(self._vector_store.add_documents, chunks)
+                    self._vector_store.add_documents(chunks)
 
                 completed += 1
                 await self.send(
@@ -955,10 +723,6 @@ class ListenWSServer:
                         completed_files=completed,
                     )
                 )
-
-        # Invalidate RAG cache since KB content changed
-        if self._rag_engine:
-            self._rag_engine._cache.invalidate()
 
         self._activity_log.add("knowledge", "info", f"KB ingestion completed ({completed}/{total_files} files)")
         # Send final status
@@ -992,20 +756,7 @@ class ListenWSServer:
         n_results = max(1, min(n_results, 50))
 
         try:
-            if self.settings.rag.hybrid_search:
-                results = await asyncio.to_thread(
-                    self._vector_store.hybrid_query,
-                    query,
-                    n_results=n_results,
-                    similarity_threshold=self.settings.rag.similarity_threshold,
-                )
-            else:
-                results = await asyncio.to_thread(
-                    self._vector_store.query,
-                    query,
-                    n_results,
-                    similarity_threshold=self.settings.rag.similarity_threshold,
-                )
+            results = await asyncio.to_thread(self._vector_store.query, query, n_results)
             await self.send(
                 KBQueryResultsEvent(
                     query=query,
@@ -1015,7 +766,7 @@ class ListenWSServer:
             )
         except Exception as e:
             logger.error(f"KB query failed: {e}", exc_info=True)
-            await self.send_error("KB_QUERY_FAILED", str(e), "kb")
+            await self.send_error("KB_QUERY_FAILED", "Knowledge base query failed. Please try again.", "kb")
 
     async def send_kb_status(self) -> None:
         """Send knowledge base status to the client."""

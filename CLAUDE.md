@@ -22,20 +22,24 @@ pytest tests/test_transcript_store.py -v  # Single test file
 ```
 ┌─────────────────────┐     WebSocket (8765)     ┌──────────────────────┐
 │   SwiftUI Frontend  │ ◄──────────────────────► │   Python Backend     │
-│                     │   command.* / event.*     │                      │
-│  AppState (@Observable)                        │  Audio → Transcribe  │
+│                     │  text: command.*/event.*  │                      │
+│  AppState (@Observable)  binary: system audio  │  Mic → Transcribe   │
 │  WebSocketClient                               │  Question Detection  │
 │  EventRouter                                   │  RAG Engine (KB)     │
-│  PythonManager                                 │  Activity Logging    │
+│  SystemAudioCapture                            │  Activity Logging    │
+│  PythonManager                                 │                      │
 └─────────────────────┘                          └──────────────────────┘
 ```
+
+**Audio capture**: System audio is captured natively in Swift via `AudioHardwareCreateProcessTap` (Core Audio Taps, macOS 14.2+) and streamed to the backend as binary WebSocket frames. Microphone audio is captured in the Python backend via `sounddevice`.
 
 **Frontend** (Swift, `LSTN2/LSTN2/`): SwiftUI app with `@Observable` AppState. No external dependencies.
 **Backend** (Python 3.11+, `backend/src/listen/`): Async pipelines for audio capture, OpenAI Realtime transcription, LLM question detection, and RAG-based answering with ChromaDB.
 
 ### WebSocket Protocol
-- Frontend → Backend: `command.*` (e.g., `command.start_recording`, `command.query_kb`)
-- Backend → Frontend: `event.*` (e.g., `event.transcript.delta`, `event.question.answered`)
+- Frontend → Backend (text): `command.*` (e.g., `command.start_recording`, `command.query_kb`)
+- Frontend → Backend (binary): Raw PCM16 24kHz mono audio chunks from system audio capture
+- Backend → Frontend (text): `event.*` (e.g., `event.transcript.delta`, `event.question.answered`)
 - Protocol types defined in both `LSTN2/Models/Protocol.swift` and `backend/src/listen/server/protocol.py` — keep in sync.
 
 ## Key Files
@@ -48,12 +52,13 @@ pytest tests/test_transcript_store.py -v  # Single test file
 | `AppState.swift` | Central observable state (transcript, questions, KB, settings) |
 | `WebSocketClient.swift` | WS connection with exponential backoff reconnect |
 | `EventRouter.swift` | Parses events, filters non-English, updates AppState |
+| `SystemAudioCapture.swift` | Captures system audio via Core Audio Taps (macOS 14.2+) |
 | `PythonManager.swift` | Launches/kills backend subprocess, stale process cleanup |
 
 ### Python
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point, signal handling, single-instance PID guard |
+| `main.py` | Entry point, signal handling, single-instance PID guard, WS token generation |
 | `server/ws_server.py` | WebSocket server, command routing, session coordination |
 | `config.py` | Pydantic settings schema, persists to `~/.listen/settings.json` |
 | `transcription/openai_realtime.py` | OpenAI Realtime API session (per audio stream) |
@@ -68,16 +73,18 @@ All persisted data lives under `~/.listen/`:
 - `activity.jsonl` — activity log with 24-hour retention
 - `chromadb/` — vector store
 - `backend.pid` — single-instance guard
+- `ws_token` — per-session WebSocket auth token (deleted on exit)
 - `transcripts/` — saved transcript sessions
 
 ## Gotchas
 
 - **Protocol sync**: `Protocol.swift` and `protocol.py` define the same message types — changes must be mirrored in both.
-- **Single instance**: Backend uses PID file + port check. Swift's `PythonManager` force-kills stale processes on port 8765.
+- **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`) on startup. Frontend reads it and sends as `Authorization: Bearer <token>`. Connections from browsers (Origin header) are rejected.
+- **Single instance**: Backend uses PID file + port check. Swift's `PythonManager` kills stale processes on port 8765 (only after verifying they are Python/uv processes).
 - **English-only filtering**: Both frontend (Swift regex) and backend (Python regex) discard non-Latin script turns entirely. Defense-in-depth.
 - **Transcript dedup**: Turns keyed by `turn_id`. Delta events create/update; completion finalizes. Non-English turns are deleted wholesale.
 - **Settings not auto-synced**: Frontend settings changes require explicit `update_settings` command to propagate to backend.
-- **BlackHole required**: System audio capture needs BlackHole 2ch virtual audio loopback installed + Multi-Output Device configured in Audio MIDI Setup.
+- **System audio requires macOS 14.2+**: System audio capture uses `AudioHardwareCreateProcessTap` (Core Audio Taps). User must grant audio capture permission on first use via System Settings > Privacy & Security.
 - **Question detection rate limit**: Max 1 detection per 3 seconds per speaker to avoid hammering the LLM.
 - **Frontend transcript cap**: UI keeps max 200 entries; full session persisted to disk.
 - **RAG similarity threshold**: Default 1.5 (ChromaDB distance). Lower = stricter filtering.

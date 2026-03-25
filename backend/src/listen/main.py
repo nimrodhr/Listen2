@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import logging
 import os
+import secrets
 import signal
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from listen.utils.logging import setup_logging
 logger = logging.getLogger("listen.main")
 
 PID_FILE = Path.home() / ".listen" / "backend.pid"
+WS_TOKEN_FILE = Path.home() / ".listen" / "ws_token"
 
 
 def _handle_unhandled_exception(exc_type, exc_value, exc_tb):
@@ -60,6 +62,7 @@ def _kill_stale_instance() -> None:
         pass  # PID file invalid or process already gone
     finally:
         PID_FILE.unlink(missing_ok=True)
+        WS_TOKEN_FILE.unlink(missing_ok=True)
 
 
 def _write_pid_file() -> None:
@@ -71,6 +74,21 @@ def _write_pid_file() -> None:
 def _remove_pid_file() -> None:
     """Remove the PID file on exit."""
     PID_FILE.unlink(missing_ok=True)
+
+
+def _write_ws_token() -> str:
+    """Generate a per-session WebSocket auth token and write it to disk."""
+    token = secrets.token_hex(32)
+    WS_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WS_TOKEN_FILE.write_text(token)
+    os.chmod(WS_TOKEN_FILE, 0o600)
+    logger.info(f"WebSocket auth token written to {WS_TOKEN_FILE}")
+    return token
+
+
+def _remove_ws_token() -> None:
+    """Remove the WebSocket token file on exit."""
+    WS_TOKEN_FILE.unlink(missing_ok=True)
 
 
 async def main() -> None:
@@ -86,6 +104,9 @@ async def main() -> None:
     _write_pid_file()
     atexit.register(_remove_pid_file)
 
+    ws_token = _write_ws_token()
+    atexit.register(_remove_ws_token)
+
     settings = load_settings()
 
     logger.info("Listen backend starting", extra={"port": settings.server.ws_port})
@@ -93,7 +114,7 @@ async def main() -> None:
     # Import here to avoid circular imports and slow startup
     from listen.server.ws_server import ListenWSServer
 
-    server = ListenWSServer(settings)
+    server = ListenWSServer(settings, ws_token=ws_token)
 
     try:
         await server.start()
@@ -105,6 +126,7 @@ async def main() -> None:
     finally:
         logger.info("Listen backend shutting down")
         _remove_pid_file()
+        _remove_ws_token()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ struct LSTN2App: App {
     @State private var state = AppState()
     @State private var webSocketClient = WebSocketClient()
     @State private var setupState = SetupState()
+    @State private var systemAudioCapture = SystemAudioCapture()
     @State private var showWizard = !SetupState.hasCompletedSetup
     @State private var isCheckingSetup = !SetupState.hasCompletedSetup
     @State private var wizardRunID = UUID()
@@ -44,7 +45,7 @@ struct LSTN2App: App {
                                 wizardFromSettings = false
                                 state.settings = AppState.Settings.loadFromDisk()
                                 showWizard = false
-                                launchBackendIfNeeded()
+                                Task { await launchBackendAndConnect() }
                             }
                         )
                         .onAppear {
@@ -56,6 +57,7 @@ struct LSTN2App: App {
                         state: state,
                         webSocketClient: webSocketClient,
                         eventRouter: EventRouter(state: state),
+                        systemAudioCapture: systemAudioCapture,
                         onRerunWizard: {
                             setupState.reset()
                             wizardRunID = UUID()
@@ -64,8 +66,8 @@ struct LSTN2App: App {
                             showWizard = true
                         }
                     )
-                    .onAppear {
-                        launchBackendIfNeeded()
+                    .task {
+                        await launchBackendAndConnect()
                     }
                     .task {
                         // On subsequent launches, run quick checks and show error if something is missing
@@ -79,7 +81,7 @@ struct LSTN2App: App {
             }
         }
         .defaultSize(width: 370, height: 800)
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
 
         MenuBarExtra {
             Button(state.isWindowVisible ? "Hide Window" : "Show Window") {
@@ -97,6 +99,7 @@ struct LSTN2App: App {
             Button(state.isRecording ? "Stop Recording" : "Start Recording") {
                 if state.isRecording {
                     state.logFrontendEvent("menubar.recording.stop")
+                    systemAudioCapture.stopCapture()
                     if state.connectionStatus == .connected {
                         Task {
                             do {
@@ -122,6 +125,20 @@ struct LSTN2App: App {
 
                     state.logFrontendEvent("menubar.recording.start")
                     Task {
+                        // Request permission and set up audio streaming
+                        let permitted = await systemAudioCapture.requestPermission()
+                        let ws = webSocketClient
+                        systemAudioCapture.onAudioChunk = { chunk in
+                            Task { try? await ws.sendBinary(chunk) }
+                        }
+                        if permitted {
+                            do {
+                                try systemAudioCapture.startCapture()
+                            } catch {
+                                state.logFrontendEvent("menubar.recording.system_audio.failed", detail: error.localizedDescription, level: .error)
+                            }
+                        }
+                        // Send start command
                         do {
                             try await webSocketClient.send(ClientCommand(command: .startRecording, payload: nil))
                         } catch {
@@ -149,19 +166,45 @@ struct LSTN2App: App {
         }
     }
 
-    private func launchBackendIfNeeded() {
+    private func launchBackendAndConnect() async {
         do {
             try pythonManager.startBackend()
             log.info("Backend process launched successfully")
             state.logFrontendEvent("backend.launched")
-            // Connection is handled by ContentView.onAppear → connectIfNeeded().
-            // The WebSocketClient auto-reconnect will keep retrying until the
-            // backend is ready, so no delayed connect call is needed here.
         } catch {
             log.error("Backend launch failed: \(error.localizedDescription)")
             state.logFrontendEvent("backend.launch.failed", detail: error.localizedDescription, level: .error)
             state.errorMessage = "Failed to start backend: \(error.localizedDescription)"
+            return
         }
+
+        // Wait for the backend to start accepting connections before
+        // the WebSocket client connects, avoiding the noisy error-57 race.
+        let ready = await pythonManager.waitUntilReady()
+        if ready {
+            log.info("Backend port is open, signalling ready to connect")
+            state.logFrontendEvent("backend.ready")
+        } else {
+            log.warning("Backend did not become ready within timeout — WebSocket will retry")
+            state.logFrontendEvent("backend.ready.timeout", level: .warning)
+        }
+
+        // Read the per-session WebSocket auth token generated by the backend
+        let tokenPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".listen/ws_token")
+        if let tokenData = try? Data(contentsOf: tokenPath),
+           let token = String(data: tokenData, encoding: .utf8)?
+               .trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            state.wsToken = token
+            log.info("WebSocket auth token loaded")
+            state.logFrontendEvent("ws_token.loaded")
+        } else {
+            log.warning("Failed to read WebSocket auth token")
+            state.logFrontendEvent("ws_token.missing", level: .warning)
+        }
+
+        state.backendReady = true
     }
 
     private func showMainWindow() {
@@ -179,7 +222,7 @@ struct LSTN2App: App {
 
     private func resizeWindowForWizard() {
         guard let window = NSApplication.shared.windows.first(where: { $0.identifier?.rawValue.contains("main") ?? false }) ?? NSApplication.shared.windows.first else { return }
-        let wizardSize = NSSize(width: 370, height: 590)
+        let wizardSize = NSSize(width: 370, height: 640)
         let currentFrame = window.frame
         // Keep the window centered at its current horizontal position, adjust height from top
         let newOrigin = NSPoint(
