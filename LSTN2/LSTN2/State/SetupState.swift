@@ -11,7 +11,7 @@ final class SetupState {
     // MARK: - Step Definition
 
     enum Step: Int, CaseIterable, Comparable {
-        case environment = 0   // uv + Python + deps + BlackHole (combined)
+        case environment = 0   // uv + Python + deps
         case apiKey
         case audioConfig
 
@@ -42,14 +42,12 @@ final class SetupState {
         case uv = 0
         case python
         case deps
-        case blackHole
 
         var title: String {
             switch self {
             case .uv: "Package Manager (uv)"
             case .python: "Python Runtime"
             case .deps: "Backend Dependencies"
-            case .blackHole: "BlackHole Audio Driver"
             }
         }
     }
@@ -93,11 +91,9 @@ final class SetupState {
         }
     }
 
-    /// True when required environment sub-steps are done (uv, python, deps).
-    /// BlackHole is optional — mic-only recording works without it.
+    /// True when all environment sub-steps are done (uv, python, deps).
     var isEnvironmentComplete: Bool {
-        let required: [EnvironmentSubStep] = [.uv, .python, .deps]
-        return required.allSatisfy { sub in
+        return EnvironmentSubStep.allCases.allSatisfy { sub in
             envSubStatuses[sub] == .completed
         }
     }
@@ -109,15 +105,11 @@ final class SetupState {
     var installOutput: String = ""
     var detectedPythonVersion: String?
 
-    // BlackHole
-    /// True when driver file is installed but audio device not yet visible (reboot needed)
-    var blackHoleNeedsReboot: Bool = false
-
     // MARK: - Persistence
 
     static let setupCompleteKey = "com.lstn2.setupComplete"
     static let setupVersionKey = "com.lstn2.setupVersion"
-    static let currentSetupVersion = 2
+    static let currentSetupVersion = 3
 
     static var hasCompletedSetup: Bool {
         let version = UserDefaults.standard.integer(forKey: setupVersionKey)
@@ -137,8 +129,12 @@ final class SetupState {
 
     // MARK: - Backend Directory Resolution
 
+    /// The writable location where the backend is copied for uv sync / running.
+    static let writableBackendDirectory = "\(NSHomeDirectory())/.listen/backend"
+
     /// Resolves the backend directory by searching known locations.
-    /// Priority: LSTN2_BACKEND_DIR env var → source tree (via #filePath) → ~/Documents/LSTN2/backend
+    /// Priority: LSTN2_BACKEND_DIR env var → ~/.listen/backend (writable copy)
+    ///         → source tree (via #filePath, for dev) → app bundle (read-only)
     static func resolveBackendDirectory(_ sourceFile: String = #filePath) -> String {
         // 1. Environment variable override
         if let envDir = ProcessInfo.processInfo.environment["LSTN2_BACKEND_DIR"],
@@ -146,12 +142,16 @@ final class SetupState {
             return envDir
         }
 
-        // 2. Derive from compile-time source file path
-        //    sourceFile is e.g. /Users/mark.s/Projects/Listen2/LSTN2/LSTN2/State/SetupState.swift
-        //    We need to walk up to the repo root and append "backend"
+        // 2. Writable copy at ~/.listen/backend (used after setup copies from bundle)
+        if FileManager.default.fileExists(atPath: writableBackendDirectory) {
+            return writableBackendDirectory
+        }
+
+        // 3. Derive from compile-time source file path (development only)
+        //    sourceFile is e.g. /Users/dev/Projects/LSTN2/LSTN2/LSTN2/State/SetupState.swift
+        //    Walk up to the repo root and look for a sibling "backend" directory
         let sourceURL = URL(fileURLWithPath: sourceFile)
         var dir = sourceURL.deletingLastPathComponent() // State/
-        // Walk up until we find a sibling "backend" directory
         for _ in 0..<10 {
             dir = dir.deletingLastPathComponent()
             let candidate = dir.appendingPathComponent("backend").path
@@ -160,8 +160,23 @@ final class SetupState {
             }
         }
 
-        // 3. Fallback to conventional location
-        return "\(NSHomeDirectory())/Documents/LSTN2/backend"
+        // 4. App bundle Resources/backend (read-only, for initial copy)
+        if let bundledPath = Bundle.main.resourcePath {
+            let candidate = (bundledPath as NSString).appendingPathComponent("backend")
+            if FileManager.default.fileExists(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        // 5. Fallback
+        return writableBackendDirectory
+    }
+
+    /// Returns the path to the bundled backend inside the app's Resources, or nil if not found.
+    static var bundledBackendPath: String? {
+        guard let resourcePath = Bundle.main.resourcePath else { return nil }
+        let path = (resourcePath as NSString).appendingPathComponent("backend")
+        return FileManager.default.fileExists(atPath: path) ? path : nil
     }
 
     // MARK: - Helpers
@@ -189,6 +204,5 @@ final class SetupState {
         backendDirectory = SetupState.resolveBackendDirectory()
         installOutput = ""
         detectedPythonVersion = nil
-        blackHoleNeedsReboot = false
     }
 }

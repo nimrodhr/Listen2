@@ -9,6 +9,18 @@ final class PythonManager {
     private let uvPath: String
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
+    /// Set to `true` while an intentional stop is in progress, so the
+    /// termination handler doesn't fire the unexpected-exit callback.
+    private var _stoppingIntentionally = false
+
+    /// Called on a background thread when the backend process exits
+    /// unexpectedly (crash or non-zero exit). The app should use this
+    /// to trigger a restart.
+    var onUnexpectedExit: (() -> Void)?
+
+    /// Set to `true` when the backend prints "READY" to stdout.
+    private let readyLock = NSLock()
+    private var _backendReady = false
 
     /// Initializes the manager with the backend project directory and uv binary path.
     /// Resolves the backend directory dynamically from the source tree location.
@@ -23,6 +35,8 @@ final class PythonManager {
     func startBackend() throws {
         // Stop any previous instance first
         stopBackend()
+        _stoppingIntentionally = false
+        readyLock.withLock { _backendReady = false }
 
         // Kill any stale backend processes left from a previous app session
         killStaleBackend()
@@ -52,11 +66,14 @@ final class PythonManager {
         let stdout = Pipe()
         proc.standardOutput = stdout
         stdoutPipe = stdout
-        stdout.fileHandleForReading.readabilityHandler = { handle in
+        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
             for l in line.split(separator: "\n") {
                 log.info("[backend:stdout] \(l)")
+                if l.hasPrefix("READY ") {
+                    self?.readyLock.withLock { self?._backendReady = true }
+                }
             }
         }
 
@@ -72,8 +89,8 @@ final class PythonManager {
             }
         }
 
-        // Monitor process termination
-        proc.terminationHandler = { process in
+        // Monitor process termination and auto-restart on unexpected exit
+        proc.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
             let reason = process.terminationReason
             if reason == .uncaughtSignal {
@@ -82,6 +99,13 @@ final class PythonManager {
                 log.error("Backend process exited with status \(status)")
             } else {
                 log.info("Backend process exited normally")
+            }
+
+            // Only fire callback for unexpected exits — not intentional stops
+            guard let self, !self._stoppingIntentionally else { return }
+            if reason == .uncaughtSignal || status != 0 {
+                log.warning("Backend exited unexpectedly — notifying for restart")
+                self.onUnexpectedExit?()
             }
         }
 
@@ -95,6 +119,7 @@ final class PythonManager {
         guard let process else { return }
 
         if process.isRunning {
+            _stoppingIntentionally = true
             log.info("Stopping backend process (pid=\(process.processIdentifier))")
             process.terminate()
 
@@ -119,41 +144,24 @@ final class PythonManager {
         stdoutPipe = nil
         stderrPipe = nil
         self.process = nil
+        _stoppingIntentionally = false
     }
 
     var isRunning: Bool {
         process?.isRunning == true
     }
 
-    /// Waits until the backend is accepting TCP connections on the given port,
-    /// or until the timeout elapses. Returns `true` if the port became reachable.
-    func waitUntilReady(port: UInt16 = 8765, timeout: TimeInterval = 10) async -> Bool {
+    /// Waits until the backend prints its "READY" marker to stdout,
+    /// or until the timeout elapses. Returns `true` if the backend became ready.
+    func waitUntilReady(timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if isPortOpen(port: port) {
+            if readyLock.withLock({ _backendReady }) {
                 return true
             }
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(100))
         }
         return false
-    }
-
-    private func isPortOpen(port: UInt16) -> Bool {
-        let sock = socket(AF_INET, SOCK_STREAM, 0)
-        guard sock >= 0 else { return false }
-        defer { close(sock) }
-
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-
-        let result = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                Darwin.connect(sock, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        return result == 0
     }
 
     /// Kill any stale backend processes listening on the WebSocket port (8765).

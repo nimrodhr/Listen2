@@ -24,75 +24,41 @@ class ApiKeysConfig(BaseModel):
 class ModelsConfig(BaseModel):
     transcription: str = "gpt-4o-transcribe"
     question_detection: str = "gpt-4o-mini"
-    rag_answer: str = "gpt-4o"
+    rag_answer: str = "gpt-4o-mini"
     embedding: str = "text-embedding-3-small"
+    openai_realtime_url: str = ""
 
 
 class AudioConfig(BaseModel):
     mic_device_id: Optional[int] = None
-    system_device_id: Optional[int] = None
     sample_rate: int = 24000
     chunk_duration_ms: int = 100
 
 
 class TranscriptionConfig(BaseModel):
     language: str = "en"
-    prompt: str = (
-        "This is a meeting conversation in English. "
-        "Transcribe only English speech. "
-        "Ignore any non-English words or background noise. "
-        "If speech is unclear, prefer English interpretations."
-    )
-    glossary: list[str] = Field(default_factory=list)
     vad_threshold: float = 0.5
     vad_prefix_padding_ms: int = 300
     vad_silence_duration_ms: int = 500
     noise_reduction: str = "near_field"
 
 
-class NormalizationConfig(BaseModel):
-    enabled: bool = True
-    strip_fillers: bool = True
-    fillers: list[str] = Field(
-        default_factory=lambda: [
-            "um", "uh", "hmm", "you know", "like", "so", "I mean", "right",
-        ]
-    )
-
-
-class CorrectionConfig(BaseModel):
-    enabled: bool = False
-    model: str = "gpt-4o-mini"
-    correct_all: bool = False  # If false, only correct low-confidence turns
-    confidence_threshold: float = 0.7  # Correct turns below this confidence
-
-
 class KnowledgeBaseConfig(BaseModel):
     directory: str = ""
-    chunk_size: int = 1500
-    chunk_overlap: int = 200
-    chunk_size_unit: str = "tokens"  # "tokens" or "characters"
+    chunk_size: int = 500
+    chunk_overlap: int = 50
     chromadb_path: str = str(LISTEN_DIR / "chromadb")
-    default_collection: str = "knowledge_base"
-    preprocess_documents: bool = True
-    auto_ingest_transcripts: bool = False
 
 
 class QuestionDetectionConfig(BaseModel):
     confidence_threshold: float = 0.7
     context_window_turns: int = 10
+    context_window_seconds: int = 60
 
 
 class RagConfig(BaseModel):
-    top_k: int = 10
+    top_k: int = 5
     max_answer_length: int = 200
-    similarity_threshold: float = 1.5  # Max ChromaDB distance; lower = stricter
-    use_reranker: bool = True
-    reranker_candidates: int = 20  # Retrieve this many before reranking
-    reranker_top_n: int = 5  # Keep top N after reranking
-    hybrid_search: bool = True  # Combine vector + keyword (BM25)
-    cache_ttl_seconds: int = 300  # Cache TTL for repeated queries
-    query_logging: bool = True  # Log queries for offline analysis
 
 
 class ServerConfig(BaseModel):
@@ -106,8 +72,6 @@ class Settings(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
-    normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)
-    correction: CorrectionConfig = Field(default_factory=CorrectionConfig)
     knowledge_base: KnowledgeBaseConfig = Field(default_factory=KnowledgeBaseConfig)
     question_detection: QuestionDetectionConfig = Field(
         default_factory=QuestionDetectionConfig

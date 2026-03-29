@@ -26,19 +26,19 @@ struct AudioConfigStepView: View {
                 .help("Why configure audio devices?")
             }
 
-            Text("After setup completes, you'll need to select your audio devices in **Settings**.")
+            Text("After setup completes, select your microphone in **Settings**.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             if showInfo {
                 VStack(alignment: .leading, spacing: 8) {
                     infoRow(
-                        "Why this is needed",
-                        "LSTN2 captures two audio streams: your microphone (what you say) and system audio via BlackHole (what others say). You need to tell LSTN2 which devices to use."
+                        "Microphone",
+                        "LSTN2 uses your selected microphone to capture what you say. Choose the right device in Settings after the backend starts."
                     )
                     infoRow(
-                        "Why not configure here?",
-                        "Audio device IDs are provided by the Python backend, which starts after setup completes. The Settings tab will show the full device list once the backend is running."
+                        "System audio",
+                        "System audio (what others say in calls) is captured automatically using native macOS APIs. You may be prompted to grant audio capture permission on first recording."
                     )
                 }
                 .padding(10)
@@ -51,20 +51,20 @@ struct AudioConfigStepView: View {
                 configItem(
                     icon: "mic.fill",
                     title: "Microphone",
-                    description: "Select the microphone that captures your voice."
+                    description: "Select the microphone that captures your voice in Settings."
                 )
 
                 configItem(
                     icon: "speaker.wave.2.fill",
-                    title: "Loopback (BlackHole)",
-                    description: "Select BlackHole 2ch to capture system audio from calls."
+                    title: "System Audio",
+                    description: "Captured automatically via native macOS audio APIs. No extra setup needed."
                 )
             }
             .padding(12)
             .background(Color(NSColor.controlBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            Text("Click **Finish** to complete setup. You can configure audio devices in the Settings tab.")
+            Text("Click **Finish** to complete setup. You can configure your microphone in the Settings tab.")
                 .font(.callout)
                 .foregroundStyle(.primary)
         }

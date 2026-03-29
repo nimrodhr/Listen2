@@ -1,11 +1,12 @@
 import Foundation
 
+let kProtocolVersion = "0.1.0"
+
 enum CommandName: String, Codable {
     case startRecording = "start_recording"
     case stopRecording = "stop_recording"
     case updateSettings = "update_settings"
     case getAudioDevices = "get_audio_devices"
-    case checkAudioSetup = "check_audio_setup"
     case ingestKB = "ingest_kb"
     case removeKBSource = "remove_kb_source"
     case getKBStatus = "get_kb_status"
@@ -45,7 +46,6 @@ enum EventName: String {
     case questionAnswered = "question.answered"
     case questionNoAnswer = "question.no_answer"
     case audioDevices = "audio_devices"
-    case audioSetupStatus = "audio_setup_status"
     case kbIngestionProgress = "kb.ingestion_progress"
     case kbStatus = "kb.status"
     case kbQueryResults = "kb.query_results"

@@ -5,6 +5,8 @@ import json
 from listen.server.protocol import (
     ConnectedEvent,
     ErrorEvent,
+    KBStatusEvent,
+    PROTOCOL_VERSION,
     RecordingStateEvent,
     TranscriptDeltaEvent,
     serialize,
@@ -66,3 +68,25 @@ class TestProtocol:
         import pytest
         with pytest.raises(json.JSONDecodeError):
             parse_command("not valid json")
+
+    def test_connected_event_uses_protocol_version(self):
+        event = ConnectedEvent()
+        raw = serialize(event)
+        data = json.loads(raw)
+        assert data["version"] == PROTOCOL_VERSION
+
+    def test_kb_status_available(self):
+        event = KBStatusEvent(total_documents=5, total_chunks=50, available=True)
+        raw = serialize(event)
+        data = json.loads(raw)
+        assert data["available"] is True
+        assert data["error"] is None
+        assert data["total_documents"] == 5
+
+    def test_kb_status_unavailable(self):
+        event = KBStatusEvent(available=False, error="Vector store not initialized")
+        raw = serialize(event)
+        data = json.loads(raw)
+        assert data["available"] is False
+        assert data["error"] == "Vector store not initialized"
+        assert data["total_documents"] == 0

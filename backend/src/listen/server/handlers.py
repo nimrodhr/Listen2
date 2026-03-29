@@ -17,12 +17,11 @@ Handler = Callable[["ListenWSServer", dict], Coroutine[Any, Any, None]]
 async def handle_start_recording(server: "ListenWSServer", msg: dict) -> None:
     """Start audio capture and transcription."""
     mic_device_id = msg.get("mic_device_id")
-    system_device_id = msg.get("system_device_id")
     logger.info(
         "Start recording requested",
-        extra={"mic_device_id": mic_device_id, "system_device_id": system_device_id},
+        extra={"mic_device_id": mic_device_id},
     )
-    await server.start_recording(mic_device_id, system_device_id)
+    await server.start_recording(mic_device_id)
 
 
 async def handle_stop_recording(server: "ListenWSServer", msg: dict) -> None:
@@ -42,12 +41,6 @@ async def handle_get_audio_devices(server: "ListenWSServer", msg: dict) -> None:
     """Return list of available audio devices."""
     logger.info("Audio devices list requested")
     await server.send_audio_devices()
-
-
-async def handle_check_audio_setup(server: "ListenWSServer", msg: dict) -> None:
-    """Check BlackHole audio setup status."""
-    logger.info("Audio setup check requested")
-    await server.check_audio_setup()
 
 
 async def handle_ingest_kb(server: "ListenWSServer", msg: dict) -> None:
@@ -131,7 +124,6 @@ COMMAND_HANDLERS: dict[str, Handler] = {
     "command.stop_recording": handle_stop_recording,
     "command.update_settings": handle_update_settings,
     "command.get_audio_devices": handle_get_audio_devices,
-    "command.check_audio_setup": handle_check_audio_setup,
     "command.ingest_kb": handle_ingest_kb,
     "command.remove_kb_source": handle_remove_kb_source,
     "command.get_kb_status": handle_get_kb_status,

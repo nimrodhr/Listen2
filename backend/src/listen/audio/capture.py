@@ -1,4 +1,4 @@
-"""Dual audio capture from microphone and system audio (BlackHole)."""
+"""Audio capture from microphone via sounddevice/PortAudio."""
 
 from __future__ import annotations
 
@@ -38,8 +38,16 @@ class AudioStream:
         self._peak_since_log = 0
         self._zero_log_count = 0
 
-    def start(self) -> None:
-        """Open the audio stream and begin capturing."""
+    def start(self, timeout: float = 5.0) -> None:
+        """Open the audio stream and begin capturing.
+
+        Args:
+            timeout: Maximum seconds to wait for the stream to start.
+                     PortAudio can block indefinitely if macOS microphone
+                     permission has not been granted.
+        """
+        import threading
+
         dev_info = sd.query_devices(self.device_id)
         native_rate = dev_info["default_samplerate"]
         max_ch = dev_info["max_input_channels"]
@@ -62,7 +70,41 @@ class AudioStream:
             blocksize=blocksize,
             callback=self._audio_callback,
         )
-        self._stream.start()
+
+        # PortAudio's Pa_StartStream can block forever if macOS microphone
+        # permission hasn't been granted.  Run it in a thread with a timeout.
+        error: list[Exception] = []
+        started = threading.Event()
+
+        def _start() -> None:
+            try:
+                self._stream.start()
+                started.set()
+            except Exception as exc:
+                error.append(exc)
+                started.set()
+
+        t = threading.Thread(target=_start, daemon=True)
+        t.start()
+        if not started.wait(timeout=timeout):
+            # Stream.start() hung — likely a permission issue
+            logger.error(
+                f"[{self.label}] sd.InputStream.start() timed out after {timeout}s "
+                f"— microphone permission may not be granted"
+            )
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+            raise RuntimeError(
+                f"Microphone stream start timed out ({timeout}s). "
+                f"Please grant microphone permission in System Settings > "
+                f"Privacy & Security > Microphone and restart."
+            )
+        if error:
+            raise error[0]
+
         logger.info(
             f"[{self.label}] Audio stream started: device={self.device_id}, "
             f"rate={native_rate}, channels={channels}, blocksize={blocksize}"
@@ -131,12 +173,12 @@ class AudioStream:
 
 
 class AudioCapture:
-    """Manages dual audio capture: microphone (user) and system audio (BlackHole)."""
+    """Manages microphone audio capture. System audio is captured natively by the
+    Swift frontend via Core Audio Taps and streamed as binary WebSocket frames."""
 
     def __init__(
         self,
         mic_device_id: int,
-        system_device_id: int,
         loop: asyncio.AbstractEventLoop,
         chunk_duration_ms: int = 100,
     ) -> None:
@@ -146,25 +188,17 @@ class AudioCapture:
             loop=loop,
             chunk_duration_ms=chunk_duration_ms,
         )
-        self.system_stream = AudioStream(
-            device_id=system_device_id,
-            label="system",
-            loop=loop,
-            chunk_duration_ms=chunk_duration_ms,
-        )
 
     def start(self) -> None:
-        """Start both audio streams."""
+        """Start microphone audio stream."""
         self.mic_stream.start()
-        self.system_stream.start()
-        logger.info("Dual audio capture started")
+        logger.info("Microphone audio capture started")
 
     def stop(self) -> None:
-        """Stop both audio streams."""
+        """Stop microphone audio stream."""
         self.mic_stream.stop()
-        self.system_stream.stop()
-        logger.info("Dual audio capture stopped")
+        logger.info("Microphone audio capture stopped")
 
     @property
     def is_active(self) -> bool:
-        return self.mic_stream.is_active or self.system_stream.is_active
+        return self.mic_stream.is_active

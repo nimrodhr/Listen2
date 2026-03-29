@@ -11,13 +11,15 @@ import time
 from difflib import SequenceMatcher
 from typing import Callable, Coroutine, Any, Optional
 
+import os
+
 import websockets
 
 from listen.utils.text_filters import is_likely_english as _is_likely_english
 
 logger = logging.getLogger("listen.transcription.openai_realtime")
 
-REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+DEFAULT_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 MAX_SESSION_DURATION = 55 * 60  # Reconnect at 55 minutes (limit is 60)
 
 # Pattern to strip raw VQ audio codec tokens that OpenAI sometimes emits
@@ -43,6 +45,7 @@ class OpenAIRealtimeSession:
         vad_prefix_padding_ms: int = 300,
         vad_silence_duration_ms: int = 500,
         noise_reduction: str = "near_field",
+        realtime_url: str = "",
     ) -> None:
         self.api_key = api_key
         self.label = label  # "me" or "them"
@@ -53,6 +56,7 @@ class OpenAIRealtimeSession:
         self.vad_prefix_padding_ms = vad_prefix_padding_ms
         self.vad_silence_duration_ms = vad_silence_duration_ms
         self.noise_reduction = noise_reduction
+        self.realtime_url = realtime_url or os.environ.get("OPENAI_REALTIME_URL", "") or DEFAULT_REALTIME_URL
 
         self._ws: Optional[websockets.ClientConnection] = None
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
@@ -66,10 +70,13 @@ class OpenAIRealtimeSession:
         self._pending_speech_timing: Optional[tuple[float, float]] = None
         self._accumulated_deltas: dict[str, str] = {}  # item_id -> accumulated delta text
 
+        self._audio_chunks_sent = 0
+
         # Callbacks — set by the parent (TranscriptionSessionPair or main.py)
         self.on_transcript_delta: Optional[TranscriptCallback] = None
         self.on_transcript_completed: Optional[TranscriptCallback] = None
         self.on_error: Optional[ErrorCallback] = None
+        self.on_connected: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None
 
     async def connect(self) -> None:
         """Connect to OpenAI Realtime API and start send/receive loops.
@@ -93,13 +100,16 @@ class OpenAIRealtimeSession:
                 logger.info(f"[{self.label}] Connecting to OpenAI Realtime API...")
 
                 self._ws = await websockets.connect(
-                    REALTIME_URL,
+                    self.realtime_url,
                     additional_headers=headers,
                     max_size=None,
                 )
                 self._connected_at = time.time()
+                self._audio_chunks_sent = 0
 
                 logger.info(f"[{self.label}] Connected to OpenAI Realtime API")
+                if self.on_connected:
+                    await self.on_connected(self.label)
                 await self._configure_session()
 
                 # Run send and receive loops; watchdog will cancel them when
@@ -118,10 +128,33 @@ class OpenAIRealtimeSession:
                     break
                 logger.warning(f"[{self.label}] Connection lost, reconnecting in 2s...")
                 await asyncio.sleep(2)
+            except websockets.exceptions.InvalidStatus as e:
+                if not self._running:
+                    break
+                # HTTP-level rejection (401 = bad API key, 403 = forbidden, etc.)
+                status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+                logger.error(f"[{self.label}] Connection rejected (HTTP {status}): {e}")
+                if status == 401:
+                    error_event = {"error": {"message": "Invalid OpenAI API key", "code": "invalid_api_key"}}
+                elif status == 403:
+                    error_event = {"error": {"message": "Access denied by OpenAI", "code": "forbidden"}}
+                elif status == 429:
+                    error_event = {"error": {"message": "OpenAI rate limit exceeded", "code": "rate_limit_exceeded"}}
+                else:
+                    error_event = {"error": {"message": f"OpenAI connection failed (HTTP {status})", "code": "connection_failed"}}
+                if self.on_error:
+                    await self.on_error(error_event)
+                # Don't retry auth errors — they won't resolve without user action
+                if status in (401, 403):
+                    self._running = False
+                    break
+                await asyncio.sleep(5)
             except Exception as e:
                 if not self._running:
                     break
                 logger.error(f"[{self.label}] Session error: {e}", exc_info=True)
+                if self.on_error:
+                    await self.on_error({"error": {"message": str(e), "code": "connection_error"}})
                 await asyncio.sleep(5)
 
         # Final cleanup
@@ -187,6 +220,9 @@ class OpenAIRealtimeSession:
             })
             try:
                 await self._ws.send(msg)
+                self._audio_chunks_sent += 1
+                if self._audio_chunks_sent == 1:
+                    logger.info(f"[{self.label}] First audio chunk sent to OpenAI ({len(chunk)} bytes)")
             except (websockets.ConnectionClosed, asyncio.CancelledError):
                 break
 

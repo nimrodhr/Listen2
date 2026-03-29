@@ -29,7 +29,7 @@ A macOS meeting co-pilot that provides real-time transcription, question detecti
 
 Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 
-- Dual-stream audio capture (mic + system audio via BlackHole)
+- Mic audio capture via sounddevice; system audio via native Core Audio Taps (macOS 14.2+)
 - OpenAI Realtime API transcription with session pairs
 - Transcript persistence to `~/.listen/transcripts/`
 - LLM-based question detection with rate limiting
@@ -41,10 +41,9 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 
 ## Requirements
 
-- macOS 14+
+- macOS 14.2+ (Sonoma or later — required for Core Audio Taps)
 - Xcode 16+
 - Python 3.11+ with [uv](https://docs.astral.sh/uv/) installed (`~/.local/bin/uv`)
-- [BlackHole 2ch](https://existential.audio/blackhole/) for system audio capture
 - OpenAI API key
 
 ## Setup
@@ -55,8 +54,7 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
    cd backend
    uv sync
    ```
-3. Install BlackHole 2ch and configure a Multi-Output Device in Audio MIDI Setup
-4. Run the app from Xcode (Cmd+R) — it auto-launches the backend and connects via WebSocket
+3. Run the app from Xcode (Cmd+R) — it auto-launches the backend and connects via WebSocket
 5. Enter your OpenAI API key in Settings
 
 ## Running the Backend Manually

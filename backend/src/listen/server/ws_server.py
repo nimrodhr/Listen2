@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +13,6 @@ from websockets.asyncio.server import Server, ServerConnection
 
 from listen.config import Settings, save_settings
 from listen.audio.devices import list_input_devices
-from listen.audio.capture import AudioCapture
 from listen.transcription.session_pair import TranscriptionSessionPair
 from listen.transcription.transcript_store import TranscriptStore, TranscriptEntry
 from listen.transcription.transcript_persistence import TranscriptPersistence
@@ -46,6 +46,14 @@ from listen.activity import ActivityLog, ActivityLogEntry as ALogEntry
 
 logger = logging.getLogger("listen.server.ws_server")
 
+# User-friendly error messages for known OpenAI error codes
+_OPENAI_ERROR_MESSAGES: dict[str, str] = {
+    "invalid_api_key": "Your OpenAI API key is invalid. Please update it in Settings.",
+    "insufficient_quota": "Your OpenAI account has run out of credits. Add billing at platform.openai.com.",
+    "rate_limit_exceeded": "OpenAI rate limit exceeded. Please wait a moment and try again.",
+    "model_not_found": "The configured transcription model is not available on your OpenAI account.",
+}
+
 
 class ListenWSServer:
     """WebSocket server that accepts one client (the Electron renderer)."""
@@ -58,20 +66,23 @@ class ListenWSServer:
         self._is_recording = False
 
         # Pipeline components
-        self._audio_capture: Optional[AudioCapture] = None
         self._transcription: Optional[TranscriptionSessionPair] = None
         self._transcript_store = TranscriptStore()
         self._transcript_persistence = TranscriptPersistence()
         self._audio_feed_tasks: list[asyncio.Task] = []
         self._detection_tasks: list[asyncio.Task] = []
-        # System audio arrives as binary WebSocket frames from the Swift frontend
+        # Audio arrives as tagged binary WebSocket frames from the Swift frontend.
+        # Each frame is prefixed with a 1-byte tag: 0x01 = mic, 0x02 = system.
         self._system_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
+        self._mic_audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
 
         # Intelligence components
         self._question_detector: Optional[QuestionDetector] = None
         self._rag_engine: Optional[RAGEngine] = None
         self._vector_store: Optional[VectorStore] = None
         self._active_detection_tasks: int = 0
+        self._dropped_audio_frames: int = 0
+        self._last_drop_log_time: float = 0.0
 
         # Activity log
         log_path = Path.home() / ".listen" / "activity.jsonl"
@@ -89,9 +100,35 @@ class ListenWSServer:
         self._transcript_store.on_delta = self._on_transcript_delta
         self._transcript_store.on_completed = self._on_transcript_completed
 
-        # Initialize vector store (persistent across sessions)
+        # Start the WebSocket server FIRST so the frontend can connect immediately.
+        # Vector store initialization can take 30+ seconds and should not block
+        # the READY signal — it only needs to be ready before recording starts.
+        self._server = await websockets.serve(
+            self._handle_client,
+            host,
+            port,
+            # Detect dead clients quickly (e.g. app killed without clean close).
+            # Default is 20s/20s which means up to 40s before a zombie is reaped.
+            ping_interval=10,
+            ping_timeout=5,
+        )
+
+        self._activity_log.add("connection", "info", f"Backend started on ws://{host}:{port}")
+        logger.info(f"WebSocket server listening on ws://{host}:{port}")
+        print(f"READY ws://{host}:{port}", flush=True)
+
+        # Initialize vector store in background (persistent across sessions).
+        # This can be slow (embedding model download/init) but recording and
+        # transcription work without it — only RAG features need it.
+        asyncio.create_task(self._init_vector_store())
+
+        await self._server.wait_closed()
+
+    async def _init_vector_store(self) -> None:
+        """Initialize the vector store in the background."""
         try:
-            self._vector_store = VectorStore(
+            self._vector_store = await asyncio.to_thread(
+                VectorStore,
                 persist_path=self.settings.knowledge_base.chromadb_path,
                 embedding_model=self.settings.models.embedding,
                 api_key=self.settings.api_keys.openai,
@@ -100,18 +137,13 @@ class ListenWSServer:
         except Exception as e:
             logger.warning(f"Failed to initialize vector store: {e}")
             self._activity_log.add("knowledge", "warning", f"Vector store failed to initialize: {e}")
-
-        self._server = await websockets.serve(
-            self._handle_client,
-            host,
-            port,
-        )
-
-        self._activity_log.add("connection", "info", f"Backend started on ws://{host}:{port}")
-        logger.info(f"WebSocket server listening on ws://{host}:{port}")
-        print(f"READY ws://{host}:{port}", flush=True)
-
-        await self._server.wait_closed()
+            # Notify connected client that KB is permanently unavailable
+            await self.send_error(
+                "KB_INIT_FAILED",
+                "Knowledge base failed to initialize. RAG features are unavailable.",
+                "kb",
+                recoverable=True,
+            )
 
     def _on_activity_log_entry(self, entry: ALogEntry) -> None:
         """Forward a new activity log entry to the connected client."""
@@ -125,8 +157,11 @@ class ListenWSServer:
             except RuntimeError:
                 pass  # No running event loop — skip forwarding
 
-    def _init_intelligence(self) -> None:
-        """Initialize question detector and RAG engine based on current settings."""
+    def _init_intelligence(self) -> bool:
+        """Initialize question detector and RAG engine based on current settings.
+
+        Returns True on success, False if initialization failed.
+        """
         try:
             # Create LLM client for question detection
             qd_model = self.settings.models.question_detection
@@ -157,9 +192,13 @@ class ListenWSServer:
                 "question_detection_model": qd_model,
                 "rag_model": self.settings.models.rag_answer,
             })
+            return True
         except Exception as e:
             logger.warning(f"Failed to initialize intelligence: {e}")
             self._activity_log.add("intelligence", "warning", f"Intelligence init failed: {e}")
+            self._question_detector = None
+            self._rag_engine = None
+            return False
 
     async def _on_openai_error(self, event: dict) -> None:
         """Forward OpenAI Realtime API errors to the frontend."""
@@ -170,11 +209,21 @@ class ListenWSServer:
         self._activity_log.add("transcription", "error", f"OpenAI: {error_msg}", {
             "error_code": error_code,
         })
+
+        # Provide user-friendly messages for known error codes
+        user_msg = _OPENAI_ERROR_MESSAGES.get(error_code, error_msg)
+
         await self.send_error(
             f"OPENAI_{error_code}".upper(),
-            error_msg,
+            user_msg,
             "transcription",
         )
+
+    async def _on_openai_connected(self, label: str) -> None:
+        """Log when an OpenAI transcription session connects."""
+        source = "Microphone" if label == "me" else "System audio"
+        self._activity_log.add("transcription", "info", f"{source} transcription connected to OpenAI")
+        logger.info(f"OpenAI transcription session connected: {label}")
 
     async def _on_transcript_delta(self, entry: TranscriptEntry) -> None:
         """Forward transcript delta to the frontend."""
@@ -284,21 +333,16 @@ class ListenWSServer:
 
     async def _health_ping_loop(self) -> None:
         """Send periodic pings to keep the connection alive and let frontend detect staleness."""
-        import time
         while self._client is not None:
             try:
                 await self.send(PongEvent(server_time=time.time()))
                 await asyncio.sleep(15)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Health ping failed: {e}")
                 break
 
     async def _handle_client(self, websocket: ServerConnection) -> None:
         """Handle a single client connection."""
-        if self._client is not None:
-            logger.warning("Rejecting additional client connection")
-            await websocket.close(1013, "Only one client allowed")
-            return
-
         # Reject browser-originated connections (Origin header = CSWSH indicator)
         origin = websocket.request.headers.get("Origin", "")
         if origin:
@@ -315,6 +359,17 @@ class ListenWSServer:
             await websocket.close(1008, "Unauthorized")
             return
 
+        # If an old client is still connected (e.g. app was killed without clean
+        # disconnect), close it to make room for the new one.  Auth already
+        # validated above, so the newcomer is legitimate.
+        if self._client is not None:
+            logger.warning("Replacing stale client connection with new one")
+            self._activity_log.add("connection", "warning", "Closing stale client connection (new client connected)")
+            try:
+                await self._client.close(1012, "Replaced by new client")
+            except Exception:
+                pass  # old connection may already be broken
+
         self._client = websocket
         logger.info("Client connected")
         self._activity_log.add("connection", "info", "Frontend client connected")
@@ -330,11 +385,24 @@ class ListenWSServer:
 
             async for message in websocket:
                 if isinstance(message, bytes):
-                    # Binary frame = system audio PCM from Swift frontend
+                    # Binary frame = tagged audio PCM from Swift frontend.
+                    # First byte: 0x01 = mic, 0x02 = system audio.
+                    if len(message) < 2:
+                        continue
+                    tag = message[0]
+                    pcm_data = message[1:]
+                    target_queue = self._mic_audio_queue if tag == 0x01 else self._system_audio_queue
                     try:
-                        self._system_audio_queue.put_nowait(message)
+                        target_queue.put_nowait(pcm_data)
                     except asyncio.QueueFull:
-                        pass  # Drop frame rather than block
+                        self._dropped_audio_frames += 1
+                        now = time.monotonic()
+                        if now - self._last_drop_log_time > 5.0:
+                            source = "mic" if tag == 0x01 else "system"
+                            logger.warning(f"Dropped {self._dropped_audio_frames} {source} audio frames (queue full)")
+                            self._activity_log.add("audio", "warning", f"Dropped {self._dropped_audio_frames} {source} audio frames (queue full)")
+                            self._dropped_audio_frames = 0
+                            self._last_drop_log_time = now
                 else:
                     await self._handle_message(str(message))
 
@@ -412,21 +480,11 @@ class ListenWSServer:
     ) -> None:
         """Start audio capture and transcription pipeline.
 
-        Mic audio is captured locally via sounddevice/PortAudio.
-        System audio arrives as binary WebSocket frames from the Swift frontend
-        (captured via Core Audio Taps) and is fed from _system_audio_queue.
+        Both mic and system audio arrive as tagged binary WebSocket frames
+        from the Swift frontend (mic via AVAudioEngine, system via Core Audio
+        Taps). Each frame is prefixed with a 1-byte tag (0x01=mic, 0x02=system).
         """
         if self._is_recording:
-            return
-
-        mic_id = mic_device_id if mic_device_id is not None else self.settings.audio.mic_device_id
-
-        if mic_id is None:
-            await self.send_error(
-                "AUDIO_DEVICE_NOT_CONFIGURED",
-                "Please select a microphone device in settings",
-                "audio",
-            )
             return
 
         openai_key = self.settings.api_keys.openai
@@ -439,26 +497,25 @@ class ListenWSServer:
             return
 
         try:
-            loop = asyncio.get_running_loop()
             await self._transcript_store.clear()
             self._transcript_persistence.start_session()
 
             # Initialize intelligence modules
-            self._init_intelligence()
+            if not self._init_intelligence():
+                await self.send_error(
+                    "INTELLIGENCE_INIT_FAILED",
+                    "Question detection and RAG are unavailable this session.",
+                    "intelligence",
+                    recoverable=True,
+                )
 
-            # Drain any stale system audio frames from previous session
-            while not self._system_audio_queue.empty():
-                try:
-                    self._system_audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
-            # Create microphone audio capture (system audio comes via WebSocket binary)
-            self._audio_capture = AudioCapture(
-                mic_device_id=mic_id,
-                loop=loop,
-                chunk_duration_ms=self.settings.audio.chunk_duration_ms,
-            )
+            # Drain any stale audio frames from previous session
+            for q in (self._system_audio_queue, self._mic_audio_queue):
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
 
             # Create transcription sessions
             self._transcription = TranscriptionSessionPair(
@@ -466,22 +523,21 @@ class ListenWSServer:
                 config=self.settings.transcription,
                 model=self.settings.models.transcription,
                 transcript_store=self._transcript_store,
+                realtime_url=self.settings.models.openai_realtime_url,
             )
             self._transcription.on_error = self._on_openai_error
-
-            # Start microphone audio capture
-            self._audio_capture.start()
+            self._transcription.on_connected = self._on_openai_connected
 
             # Start transcription sessions
             await self._transcription.start()
 
-            # Start audio feed tasks:
-            # - mic: from local sounddevice capture queue
-            # - system: from WebSocket binary frames queue
+            # Start audio feed tasks — both queues are fed by binary WebSocket
+            # frames from the Swift frontend (mic via AVAudioEngine, system via
+            # Core Audio Taps).
             self._audio_feed_tasks = [
                 asyncio.create_task(
                     self._feed_audio_loop(
-                        self._audio_capture.mic_stream.queue,
+                        self._mic_audio_queue,
                         self._transcription.feed_mic_audio,
                     ),
                     name="feed_mic_audio",
@@ -496,35 +552,23 @@ class ListenWSServer:
             ]
 
             self._is_recording = True
-            mic_connected = (
-                self._transcription is not None
-                and self._transcription.mic_session is not None
-                and self._transcription.mic_session._ws is not None
-            )
-            sys_connected = (
-                self._transcription is not None
-                and self._transcription.system_session is not None
-                and self._transcription.system_session._ws is not None
-            )
             await self.send(
                 RecordingStateEvent(
                     is_recording=True,
                     mic_active=True,
                     system_audio_active=True,
-                    openai_mic_connected=mic_connected,
-                    openai_system_connected=sys_connected,
                 )
             )
             logger.info("Recording started")
             self._activity_log.add("recording", "info", "Recording started", {
-                "mic_device_id": mic_id,
+                "mic_device_id": mic_device_id,
             })
 
         except Exception as e:
             logger.error(f"Failed to start recording: {e}", exc_info=True)
             self._activity_log.add("error", "error", f"Recording failed to start: {e}")
             await self.stop_recording()
-            await self.send_error("RECORDING_START_FAILED", "Failed to start recording. Check audio device and API key configuration.", "audio")
+            await self.send_error("RECORDING_START_FAILED", "Failed to start recording. Check API key configuration.", "audio")
 
     async def _feed_audio_loop(
         self,
@@ -532,11 +576,19 @@ class ListenWSServer:
         feed_fn,
     ) -> None:
         """Continuously read from an audio queue and feed to a transcription session."""
+        consecutive_timeouts = 0
         while self._is_recording:
             try:
                 chunk = await asyncio.wait_for(queue.get(), timeout=1.0)
                 await feed_fn(chunk)
+                consecutive_timeouts = 0
             except asyncio.TimeoutError:
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= 10:
+                    task_name = asyncio.current_task().get_name() if asyncio.current_task() else "unknown"
+                    logger.warning(f"Audio feed stalled ({task_name}): {consecutive_timeouts}s with no audio")
+                    self._activity_log.add("audio", "warning", f"Audio feed stalled ({task_name})")
+                    consecutive_timeouts = 0
                 continue
             except asyncio.CancelledError:
                 break
@@ -548,6 +600,7 @@ class ListenWSServer:
         if not self._is_recording:
             return
         self._is_recording = False
+        self._dropped_audio_frames = 0
 
         for task in self._audio_feed_tasks:
             task.cancel()
@@ -572,16 +625,8 @@ class ListenWSServer:
             self._transcription = None
 
         try:
-            if self._audio_capture:
-                self._audio_capture.stop()
-                self._audio_capture = None
-        except Exception as e:
-            logger.error(f"Error stopping audio capture: {e}", exc_info=True)
-            self._audio_capture = None
-
-        try:
             # Save transcript to disk
-            self._transcript_persistence.end_session(self._transcript_store)
+            await self._transcript_persistence.end_session(self._transcript_store)
         except Exception as e:
             logger.error(f"Error saving transcript: {e}", exc_info=True)
 
@@ -613,9 +658,12 @@ class ListenWSServer:
                 current[key] = value
         self.settings = Settings.model_validate(current)
         save_settings(self.settings)
-        await self.send(
-            SettingsUpdatedEvent(settings=self._redacted_settings())
-        )
+        try:
+            await self.send(
+                SettingsUpdatedEvent(settings=self._redacted_settings())
+            )
+        except Exception as e:
+            logger.warning(f"Settings saved but failed to send ack to frontend: {e}")
         self._activity_log.add("settings", "info", "Settings updated")
 
     async def send_audio_devices(self) -> None:
@@ -788,7 +836,8 @@ class ListenWSServer:
                     index_health=stats.get("index_health", "unknown"),
                     embedding_model=stats.get("embedding_model", ""),
                     vector_db_type=stats.get("vector_db_type", ""),
+                    available=True,
                 )
             )
         else:
-            await self.send(KBStatusEvent())
+            await self.send(KBStatusEvent(available=False, error="Vector store not initialized"))

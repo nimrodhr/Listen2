@@ -12,6 +12,9 @@ from typing import Any, Optional
 import json
 
 
+PROTOCOL_VERSION = "0.1.0"
+
+
 # --- Frontend → Backend Commands ---
 
 
@@ -19,7 +22,6 @@ import json
 class StartRecordingCommand:
     type: str = "command.start_recording"
     mic_device_id: Optional[int] = None
-    system_device_id: Optional[int] = None
 
 
 @dataclass
@@ -36,11 +38,6 @@ class UpdateSettingsCommand:
 @dataclass
 class GetAudioDevicesCommand:
     type: str = "command.get_audio_devices"
-
-
-@dataclass
-class CheckAudioSetupCommand:
-    type: str = "command.check_audio_setup"
 
 
 @dataclass
@@ -83,7 +80,7 @@ class GetActivityLogCommand:
 @dataclass
 class ConnectedEvent:
     type: str = "event.connected"
-    version: str = "0.1.0"
+    version: str = PROTOCOL_VERSION
 
 
 @dataclass
@@ -111,15 +108,6 @@ class TranscriptCompletedEvent:
 
 
 @dataclass
-class TranscriptCorrectedEvent:
-    turn_id: str
-    corrected_text: str
-    original_text: str
-    timestamp: float
-    type: str = "event.transcript.corrected"
-
-
-@dataclass
 class QuestionDetectedEvent:
     question_id: str
     question_text: str
@@ -143,8 +131,6 @@ class QuestionAnsweredEvent:
     question_id: str
     answer_text: str
     sources: list[dict] = field(default_factory=list)
-    confidence: float = 0.0
-    citations: list[int] = field(default_factory=list)
     type: str = "event.question.answered"
 
 
@@ -160,15 +146,6 @@ class AudioDevicesEvent:
     input_devices: list[dict] = field(default_factory=list)
     output_devices: list[dict] = field(default_factory=list)
     type: str = "event.audio_devices"
-
-
-@dataclass
-class AudioSetupStatusEvent:
-    blackhole_installed: bool = False
-    multi_output_configured: bool = False
-    blackhole_device_id: Optional[int] = None
-    instructions: Optional[list[str]] = None
-    type: str = "event.audio_setup_status"
 
 
 @dataclass
@@ -189,6 +166,8 @@ class KBStatusEvent:
     index_health: str = "unknown"
     embedding_model: str = ""
     vector_db_type: str = ""
+    available: bool = True
+    error: Optional[str] = None
     type: str = "event.kb.status"
 
 

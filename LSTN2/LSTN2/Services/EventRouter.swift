@@ -15,7 +15,7 @@ final class EventRouter {
         return try! NSRegularExpression(pattern: pattern)
     }()
 
-    private static func isLikelyEnglish(_ text: String) -> Bool {
+    static func isLikelyEnglish(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let range = NSRange(trimmed.startIndex..., in: trimmed)
@@ -44,7 +44,12 @@ final class EventRouter {
         switch envelope.event {
         case .connected:
             state.connectionStatus = .connected
-            state.logBackendEvent("connected", detail: "Backend session established")
+            let backendVersion = envelope.payload["version"] as? String ?? "unknown"
+            if backendVersion != kProtocolVersion {
+                log.warning("Protocol version mismatch: frontend=\(kProtocolVersion) backend=\(backendVersion)")
+                state.logBackendEvent("version_mismatch", detail: "Backend protocol \(backendVersion) != frontend \(kProtocolVersion)", level: .warning)
+            }
+            state.logBackendEvent("connected", detail: "Backend session established (v\(backendVersion))")
 
         case .recordingState:
             let active = envelope.payload["is_recording"] as? Bool ?? false
@@ -132,6 +137,12 @@ final class EventRouter {
             let health = envelope.payload["index_health"] as? String ?? "unknown"
             let embedding = envelope.payload["embedding_model"] as? String ?? ""
             let dbType = envelope.payload["vector_db_type"] as? String ?? ""
+            let available = envelope.payload["available"] as? Bool ?? true
+            let kbError = envelope.payload["error"] as? String
+
+            if !available {
+                log.warning("Knowledge base unavailable: \(kbError ?? "unknown reason")")
+            }
 
             var sources: [AppState.KBSource] = []
             if let rawSources = envelope.payload["sources"] as? [[String: Any]] {
@@ -147,36 +158,27 @@ final class EventRouter {
                 sources: sources,
                 totalDocuments: totalDocs,
                 totalChunks: totalChunks,
-                indexHealth: health,
+                indexHealth: available ? health : "unavailable",
                 embeddingModel: embedding,
                 vectorDBType: dbType
             )
-            state.logBackendEvent("kb.status", detail: "docs=\(totalDocs), chunks=\(totalChunks), health=\(health)")
+            state.logBackendEvent("kb.status", detail: "docs=\(totalDocs), chunks=\(totalChunks), health=\(health), available=\(available)")
 
         case .kbQueryResults:
             state.logBackendEvent("kb.query_results")
 
         case .audioDevices:
             var mics: [AppState.AudioDevice] = []
-            var outputs: [AppState.AudioDevice] = []
 
             if let rawInputs = envelope.payload["input_devices"] as? [[String: Any]] {
                 for raw in rawInputs {
                     guard let id = raw["id"] as? Int, let name = raw["name"] as? String else { continue }
-                    let isBH = raw["is_blackhole"] as? Bool ?? false
-                    mics.append(AppState.AudioDevice(id: id, name: name, isBlackHole: isBH))
+                    mics.append(AppState.AudioDevice(id: id, name: name))
                 }
             }
 
-            if let rawOutputs = envelope.payload["output_devices"] as? [[String: Any]] {
-                for raw in rawOutputs {
-                    guard let id = raw["id"] as? Int, let name = raw["name"] as? String else { continue }
-                    outputs.append(AppState.AudioDevice(id: id, name: name))
-                }
-            }
-
-            state.updateAvailableDevices(mics: mics, system: outputs)
-            state.logBackendEvent("audio_devices", detail: "mics=\(mics.count), outputs=\(outputs.count)")
+            state.updateAvailableDevices(mics: mics)
+            state.logBackendEvent("audio_devices", detail: "mics=\(mics.count)")
 
         case .settingsUpdated:
             state.logBackendEvent("settings_updated")
@@ -191,7 +193,7 @@ final class EventRouter {
                 state.updateTranscriptText(turnId: turnId, text: correctedText)
             }
 
-        case .audioSetupStatus, .activityLog, .activityLogEntry,
+        case .activityLog, .activityLogEntry,
              .transcriptSessions, .transcriptSessionData:
             state.logBackendEvent(envelope.event.rawValue)
         }

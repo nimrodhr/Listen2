@@ -69,12 +69,13 @@ struct APIKeyStepView: View {
             // Key input
             HStack(spacing: 8) {
                 if showKey {
-                    TextField("sk-...", text: Binding(
-                        get: { state.apiKeyInput },
-                        set: { state.apiKeyInput = $0 }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .focused($isKeyFocused)
+                    Text(maskedAPIKey)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: 22)
                 } else {
                     SecureField("Paste your OpenAI API key", text: Binding(
                         get: { state.apiKeyInput },
@@ -84,11 +85,13 @@ struct APIKeyStepView: View {
                     .focused($isKeyFocused)
                 }
 
-                Button(showKey ? "Hide" : "Show") {
+                Button(showKey ? "Hide" : "Peek") {
                     showKey.toggle()
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
+                .foregroundStyle(Color.accentColor)
+                .disabled(state.apiKeyInput.isEmpty)
             }
 
             HStack(spacing: 12) {
@@ -104,6 +107,16 @@ struct APIKeyStepView: View {
                     .font(.callout)
             }
         }
+    }
+
+    private var maskedAPIKey: String {
+        let key = state.apiKeyInput
+        guard key.count > 6 else {
+            return String(repeating: "•", count: key.count)
+        }
+        let masked = String(repeating: "•", count: key.count - 6)
+        let suffix = String(key.suffix(6))
+        return masked + suffix
     }
 
     private func infoRow(_ title: String, _ detail: String) -> some View {

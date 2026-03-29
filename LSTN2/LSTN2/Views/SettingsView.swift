@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @Binding var settings: AppState.Settings
     let micDevices: [AppState.AudioDevice]
-    let systemDevices: [AppState.AudioDevice]
     let connectionStatus: AppState.ConnectionStatus
     let onSave: (AppState.Settings) -> Void
     let onConnect: () -> Void
@@ -16,7 +15,6 @@ struct SettingsView: View {
     init(
         settings: Binding<AppState.Settings>,
         micDevices: [AppState.AudioDevice],
-        systemDevices: [AppState.AudioDevice],
         connectionStatus: AppState.ConnectionStatus,
         onSave: @escaping (AppState.Settings) -> Void,
         onConnect: @escaping () -> Void,
@@ -25,7 +23,6 @@ struct SettingsView: View {
         _settings = settings
         _draft = State(initialValue: settings.wrappedValue)
         self.micDevices = micDevices
-        self.systemDevices = systemDevices
         self.connectionStatus = connectionStatus
         self.onSave = onSave
         self.onConnect = onConnect
@@ -51,6 +48,7 @@ struct SettingsView: View {
                     audioSection
                     backendSection
                     setupSection
+                    aboutSection
                 }
             }
 
@@ -66,14 +64,6 @@ struct SettingsView: View {
                 draft.micDeviceID = newValue.first?.id
             } else if draft.micDeviceID == nil {
                 draft.micDeviceID = newValue.first?.id
-            }
-        }
-        .onChange(of: systemDevices) { _, newValue in
-            guard !newValue.isEmpty else { return }
-            if let currentID = draft.systemDeviceID, !newValue.contains(where: { $0.id == currentID }) {
-                draft.systemDeviceID = newValue.first?.id
-            } else if draft.systemDeviceID == nil {
-                draft.systemDeviceID = newValue.first?.id
             }
         }
     }
@@ -164,8 +154,6 @@ struct SettingsView: View {
     private var audioSection: some View {
         SettingsSection("Audio Devices") {
             micRow
-            Divider()
-            loopbackRow
         }
     }
 
@@ -176,21 +164,6 @@ struct SettingsView: View {
                     Text("No input devices").tag(nil as Int?)
                 } else {
                     ForEach(micDevices) { device in
-                        Text(device.name).tag(device.id as Int?)
-                    }
-                }
-            }
-            .labelsHidden()
-        }
-    }
-
-    private var loopbackRow: some View {
-        SettingsRow("Loopback") {
-            Picker("", selection: $draft.systemDeviceID) {
-                if systemDevices.isEmpty {
-                    Text("No output devices").tag(nil as Int?)
-                } else {
-                    ForEach(systemDevices) { device in
                         Text(device.name).tag(device.id as Int?)
                     }
                 }
@@ -251,6 +224,24 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
+        }
+    }
+
+    // MARK: - About Section
+
+    private var aboutSection: some View {
+        SettingsSection("About") {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("LSTN2")
+                    .font(.callout.weight(.semibold))
+                Text("Real-time meeting co-pilot")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("v1.1 — Native system audio capture, no more BlackHole setup required")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 4)
         }
     }
 

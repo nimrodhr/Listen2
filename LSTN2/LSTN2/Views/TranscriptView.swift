@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct TranscriptView: View {
     let entries: [AppState.TranscriptEntry]
@@ -16,6 +17,17 @@ struct TranscriptView: View {
                 Spacer()
 
                 if !entries.isEmpty {
+                    // Export transcript to CSV
+                    Button {
+                        exportTranscriptCSV()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Export transcript to CSV")
+
                     Button {
                         onClear()
                     } label: {
@@ -72,6 +84,61 @@ struct TranscriptView: View {
             }
         }
         .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+    }
+
+    // MARK: - CSV Export
+
+    private func formatElapsed(_ elapsed: TimeInterval) -> String {
+        let total = Int(elapsed)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private func exportTranscriptCSV() {
+        let header = "Timestamp,Speaker,Text"
+        let rows = entries.filter { $0.isFinal }.map { entry -> String in
+            let timestamp = formatElapsed(entry.elapsed)
+            let speaker = entry.speaker == .me ? "You" : "Them"
+            let text = csvEscape(entry.text)
+            return "\(timestamp),\(speaker),\(text)"
+        }
+        let csv = ([header] + rows).joined(separator: "\n")
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HHmm"
+        let timestamp = formatter.string(from: Date())
+
+        let panel = NSSavePanel()
+        panel.title = "Export Transcript"
+        panel.nameFieldStringValue = "transcript_\(timestamp).csv"
+        panel.allowedContentTypes = [UTType.commaSeparatedText]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try csv.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Export Failed"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
+    private func csvEscape(_ value: String) -> String {
+        let needsQuoting = value.contains(",") || value.contains("\"") || value.contains("\n")
+        if needsQuoting {
+            return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        return value
     }
 
     private var emptyState: some View {

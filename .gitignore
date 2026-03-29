@@ -57,3 +57,4 @@ uv.lock
 
 # Claude Code
 .claude/
+*.dmg

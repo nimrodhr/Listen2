@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct ContentView: View {
@@ -15,6 +16,7 @@ struct ContentView: View {
     let webSocketClient: WebSocketClient
     let eventRouter: EventRouter
     let systemAudioCapture: SystemAudioCapture
+    let micAudioCapture: MicAudioCapture
     var onRerunWizard: (() -> Void)?
 
     var body: some View {
@@ -238,6 +240,7 @@ struct ContentView: View {
                 state.logFrontendEvent("recording.stop.requested")
                 systemAudioStreamTask?.cancel()
                 systemAudioStreamTask = nil
+                micAudioCapture.stopCapture()
                 systemAudioCapture.stopCapture()
                 if state.connectionStatus == .connected {
                     Task {
@@ -268,42 +271,89 @@ struct ContentView: View {
             }
 
             state.logFrontendEvent("recording.start.requested")
+
+            // Check system audio permission with non-blocking preflight BEFORE async work.
+            // CGRequestScreenCaptureAccess() is synchronous and blocks the thread, which
+            // stalls the WebSocket receive loop and causes the backend connection to drop.
+            let hasSystemAudioPermission = systemAudioCapture.hasPermission()
+            if !hasSystemAudioPermission {
+                // Trigger the permission request on a background thread so it doesn't
+                // block the main thread / WebSocket receive loop.
+                Task.detached { [systemAudioCapture] in
+                    _ = await systemAudioCapture.requestPermission()
+                }
+                state.errorMessage = "System audio permission required. Grant permission in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app."
+                state.logFrontendEvent("recording.system_audio.permission_needed", level: .warning)
+                return
+            }
+
+            // Validate mic device before entering async context
+            guard let micID = state.settings.micDeviceID else {
+                state.errorMessage = "No microphone selected. Go to Settings and choose a microphone device."
+                state.logFrontendEvent("recording.blocked", detail: "no mic device", level: .warning)
+                return
+            }
+
+            // Show immediate visual feedback — will be confirmed or reverted
+            // once the backend responds with recordingState.
             withAnimation(.easeInOut(duration: 0.2)) {
                 activePanel = .live
+                state.setRecording(true)
             }
+
             Task {
-                // Request system audio capture permission (triggers macOS prompt on first use)
-                let permitted = await systemAudioCapture.requestPermission()
-                if !permitted {
-                    state.errorMessage = "System audio capture permission denied. Grant permission in System Settings > Privacy & Security > Screen & System Audio Recording."
-                    state.logFrontendEvent("recording.system_audio.permission_denied", level: .error)
+                // Request microphone permission (needed for backend's sounddevice capture)
+                // AVCaptureDevice.requestAccess is truly async and won't block.
+                let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+                if !micGranted {
+                    state.setRecording(false)
+                    state.errorMessage = "Microphone access denied. Grant permission in System Settings > Privacy & Security > Microphone."
+                    state.logFrontendEvent("recording.mic.permission_denied", level: .error)
+                    return
                 }
 
-                // Set up audio streaming callback BEFORE starting capture
+                // Set up audio streaming callbacks BEFORE starting capture.
+                // Each binary frame is prefixed with a 1-byte tag so the backend
+                // can route mic vs system audio to separate transcription sessions.
                 let ws = webSocketClient
                 systemAudioCapture.onAudioChunk = { chunk in
-                    Task { try? await ws.sendBinary(chunk) }
+                    var tagged = Data([AudioFrameTag.system.rawValue])
+                    tagged.append(chunk)
+                    Task { try? await ws.sendBinary(tagged) }
+                }
+                micAudioCapture.onAudioChunk = { chunk in
+                    var tagged = Data([AudioFrameTag.mic.rawValue])
+                    tagged.append(chunk)
+                    Task { try? await ws.sendBinary(tagged) }
                 }
 
                 // Start system audio capture via Core Audio Taps
-                if permitted {
-                    do {
-                        try systemAudioCapture.startCapture()
-                    } catch {
-                        state.errorMessage = "Failed to capture system audio: \(error.localizedDescription)"
-                        state.logFrontendEvent("recording.system_audio.failed", detail: error.localizedDescription, level: .error)
-                    }
+                do {
+                    try systemAudioCapture.startCapture()
+                } catch {
+                    state.setRecording(false)
+                    state.errorMessage = "Failed to capture system audio: \(error.localizedDescription)"
+                    state.logFrontendEvent("recording.system_audio.failed", detail: error.localizedDescription, level: .error)
+                    return
                 }
 
-                // Send start_recording command (mic device only)
-                var payload: [String: Any] = [:]
-                if let micID = state.settings.micDeviceID {
-                    payload["mic_device_id"] = micID
+                // Start mic audio capture via AVAudioEngine (runs in-process,
+                // so it inherits the app's microphone TCC permission).
+                do {
+                    try micAudioCapture.startCapture()
+                } catch {
+                    // Non-fatal: system audio still works without mic
+                    state.logFrontendEvent("recording.mic_capture.failed", detail: error.localizedDescription, level: .warning)
                 }
-                let command = ClientCommand(command: .startRecording, payload: payload.isEmpty ? nil : payload)
+
+                // Send start_recording command with validated mic device
+                let command = ClientCommand(command: .startRecording, payload: ["mic_device_id": micID])
                 do {
                     try await webSocketClient.send(command)
                 } catch {
+                    // Revert optimistic state — backend never got the command
+                    systemAudioCapture.stopCapture()
+                    state.setRecording(false)
                     state.errorMessage = "Failed to send recording command: \(error.localizedDescription)"
                     state.logFrontendEvent("recording.request.failed", detail: error.localizedDescription, level: .error)
                 }
@@ -518,5 +568,5 @@ private struct LiveWorkspaceView: View {
 #Preview {
     let state = AppState()
     let client = WebSocketClient()
-    ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state), systemAudioCapture: SystemAudioCapture(), onRerunWizard: nil)
+    ContentView(state: state, webSocketClient: client, eventRouter: EventRouter(state: state), systemAudioCapture: SystemAudioCapture(), micAudioCapture: MicAudioCapture(), onRerunWizard: nil)
 }

@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import AppKit
 import os.log
@@ -10,13 +11,16 @@ struct LSTN2App: App {
     @State private var webSocketClient = WebSocketClient()
     @State private var setupState = SetupState()
     @State private var systemAudioCapture = SystemAudioCapture()
+    @State private var micAudioCapture = MicAudioCapture()
     @State private var showWizard = !SetupState.hasCompletedSetup
     @State private var isCheckingSetup = !SetupState.hasCompletedSetup
     @State private var wizardRunID = UUID()
     /// When true, the wizard was opened from Settings and should always be shown
     /// even if all checks pass (so the user can review current status).
     @State private var wizardFromSettings = false
-    private let pythonManager = PythonManager()
+    /// Guards against concurrent calls to launchBackendAndConnect().
+    @State private var isLaunchingBackend = false
+    @State private var pythonManager = PythonManager()
 
     var body: some Scene {
         Window("LSTN2", id: "main") {
@@ -45,7 +49,8 @@ struct LSTN2App: App {
                                 wizardFromSettings = false
                                 state.settings = AppState.Settings.loadFromDisk()
                                 showWizard = false
-                                Task { await launchBackendAndConnect() }
+                                // Don't launch backend here — ContentView's .task
+                                // will call launchBackendAndConnect() when it appears.
                             }
                         )
                         .onAppear {
@@ -58,6 +63,7 @@ struct LSTN2App: App {
                         webSocketClient: webSocketClient,
                         eventRouter: EventRouter(state: state),
                         systemAudioCapture: systemAudioCapture,
+                        micAudioCapture: micAudioCapture,
                         onRerunWizard: {
                             setupState.reset()
                             wizardRunID = UUID()
@@ -67,6 +73,53 @@ struct LSTN2App: App {
                         }
                     )
                     .task {
+                        // Wire up auto-restart: when the backend process exits
+                        // unexpectedly, re-launch it after a brief delay.
+                        let appState = state
+                        let pm = pythonManager
+                        let ws = webSocketClient
+                        pythonManager.onUnexpectedExit = {
+                            log.warning("Backend died unexpectedly — scheduling restart")
+                            Task { @MainActor in
+                                appState.logFrontendEvent("backend.crashed", level: .error)
+                                appState.connectionStatus = .disconnected
+                                appState.backendReady = false
+                                ws.disconnect()
+
+                                // Brief delay to avoid tight restart loops
+                                try? await Task.sleep(for: .seconds(2))
+
+                                do {
+                                    try pm.startBackend()
+                                    let ready = await pm.waitUntilReady()
+                                    if !ready {
+                                        log.warning("Backend restart: did not become ready within timeout")
+                                    }
+
+                                    // Re-read the new auth token
+                                    let tokenPath = FileManager.default.homeDirectoryForCurrentUser
+                                        .appendingPathComponent(".listen/ws_token")
+                                    if let tokenData = try? Data(contentsOf: tokenPath),
+                                       let token = String(data: tokenData, encoding: .utf8)?
+                                           .trimmingCharacters(in: .whitespacesAndNewlines),
+                                       !token.isEmpty {
+                                        appState.wsToken = token
+                                    }
+
+                                    appState.backendReady = true
+                                    appState.logFrontendEvent("backend.auto_restarted")
+
+                                    // Connect directly after restart
+                                    if let url = URL(string: "ws://127.0.0.1:8765") {
+                                        appState.connectionStatus = .connecting
+                                        ws.connect(url: url, authToken: appState.wsToken)
+                                    }
+                                } catch {
+                                    log.error("Backend auto-restart failed: \(error.localizedDescription)")
+                                    appState.errorMessage = "Backend crashed and failed to restart: \(error.localizedDescription)"
+                                }
+                            }
+                        }
                         await launchBackendAndConnect()
                     }
                     .task {
@@ -99,6 +152,7 @@ struct LSTN2App: App {
             Button(state.isRecording ? "Stop Recording" : "Start Recording") {
                 if state.isRecording {
                     state.logFrontendEvent("menubar.recording.stop")
+                    micAudioCapture.stopCapture()
                     systemAudioCapture.stopCapture()
                     if state.connectionStatus == .connected {
                         Task {
@@ -124,21 +178,47 @@ struct LSTN2App: App {
                     }
 
                     state.logFrontendEvent("menubar.recording.start")
+
+                    // Check system audio permission with non-blocking preflight first
+                    let hasSystemAudioPermission = systemAudioCapture.hasPermission()
+                    if !hasSystemAudioPermission {
+                        Task.detached { [systemAudioCapture] in
+                            _ = await systemAudioCapture.requestPermission()
+                        }
+                        state.errorMessage = "System audio permission required. Grant permission in System Settings > Privacy & Security > Screen & System Audio Recording, then restart the app."
+                        state.logFrontendEvent("menubar.recording.system_audio.permission_needed", level: .warning)
+                        return
+                    }
+
                     Task {
-                        // Request permission and set up audio streaming
-                        let permitted = await systemAudioCapture.requestPermission()
+                        let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+                        if !micGranted {
+                            state.errorMessage = "Microphone access denied. Grant permission in System Settings > Privacy & Security > Microphone."
+                            state.logFrontendEvent("menubar.recording.mic.permission_denied", level: .error)
+                            return
+                        }
+
                         let ws = webSocketClient
                         systemAudioCapture.onAudioChunk = { chunk in
-                            Task { try? await ws.sendBinary(chunk) }
+                            var tagged = Data([AudioFrameTag.system.rawValue])
+                            tagged.append(chunk)
+                            Task { try? await ws.sendBinary(tagged) }
                         }
-                        if permitted {
-                            do {
-                                try systemAudioCapture.startCapture()
-                            } catch {
-                                state.logFrontendEvent("menubar.recording.system_audio.failed", detail: error.localizedDescription, level: .error)
-                            }
+                        micAudioCapture.onAudioChunk = { chunk in
+                            var tagged = Data([AudioFrameTag.mic.rawValue])
+                            tagged.append(chunk)
+                            Task { try? await ws.sendBinary(tagged) }
                         }
-                        // Send start command
+                        do {
+                            try systemAudioCapture.startCapture()
+                        } catch {
+                            state.logFrontendEvent("menubar.recording.system_audio.failed", detail: error.localizedDescription, level: .error)
+                        }
+                        do {
+                            try micAudioCapture.startCapture()
+                        } catch {
+                            state.logFrontendEvent("menubar.recording.mic_capture.failed", detail: error.localizedDescription, level: .error)
+                        }
                         do {
                             try await webSocketClient.send(ClientCommand(command: .startRecording, payload: nil))
                         } catch {
@@ -167,6 +247,26 @@ struct LSTN2App: App {
     }
 
     private func launchBackendAndConnect() async {
+        // Prevent concurrent launches — multiple callers can race here when
+        // the wizard completes and ContentView's .task both trigger this.
+        guard !isLaunchingBackend else {
+            log.info("Skipping duplicate launchBackendAndConnect call")
+            return
+        }
+        isLaunchingBackend = true
+        defer { isLaunchingBackend = false }
+
+        // Tear down any existing connection — the backend is about to restart
+        // with a new auth token, so the old connection (and its reconnect loop)
+        // must be fully discarded.
+        webSocketClient.disconnect()
+        // Yield briefly so the queued disconnect callback on the main queue
+        // can fire before we set new state, avoiding a race where the async
+        // callback later overwrites our .connecting status.
+        try? await Task.sleep(for: .milliseconds(50))
+        state.connectionStatus = .disconnected
+        state.backendReady = false
+
         do {
             try pythonManager.startBackend()
             log.info("Backend process launched successfully")
@@ -205,6 +305,13 @@ struct LSTN2App: App {
         }
 
         state.backendReady = true
+
+        // Connect directly instead of relying on ContentView's onChange handler,
+        // which can miss the transition due to timing / view lifecycle races.
+        guard let url = URL(string: "ws://127.0.0.1:8765") else { return }
+        state.connectionStatus = .connecting
+        webSocketClient.connect(url: url, authToken: state.wsToken)
+        state.logFrontendEvent("connect.requested", detail: "launchBackendAndConnect -> \(url.absoluteString)")
     }
 
     private func showMainWindow() {

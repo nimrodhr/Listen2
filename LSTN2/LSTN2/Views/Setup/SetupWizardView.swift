@@ -1,3 +1,4 @@
+import CoreGraphics
 import SwiftUI
 
 struct SetupWizardView: View {
@@ -5,7 +6,6 @@ struct SetupWizardView: View {
     let setupManager: SetupManager
     let onComplete: () -> Void
 
-    @State private var showRebootAlert = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,9 +86,12 @@ struct SetupWizardView: View {
 
             if isLastStep {
                 Button("Finish") {
-                    if setupState.blackHoleNeedsReboot {
-                        showRebootAlert = true
-                    } else {
+                    Task {
+                        // Request screen capture permission if not already granted.
+                        // Uses preflight check to avoid unnecessary prompts on rebuilds.
+                        if !CGPreflightScreenCaptureAccess() {
+                            CGRequestScreenCaptureAccess()
+                        }
                         SetupState.markSetupComplete()
                         onComplete()
                     }
@@ -96,20 +99,6 @@ struct SetupWizardView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!setupState.isSetupComplete)
-                .alert("Restart Required", isPresented: $showRebootAlert) {
-                    Button("Restart Later") {
-                        SetupState.markSetupComplete()
-                        onComplete()
-                    }
-                    Button("Restart Now") {
-                        SetupState.markSetupComplete()
-                        // Use AppleScript to trigger a restart
-                        let script = NSAppleScript(source: "tell application \"System Events\" to restart")
-                        script?.executeAndReturnError(nil)
-                    }
-                } message: {
-                    Text("BlackHole was installed but requires a restart to activate the audio driver. You can restart now or continue and restart later.")
-                }
             } else {
                 Button("Next") {
                     goToNextStep()

@@ -23,37 +23,29 @@ class TranscriptionSessionPair:
         config: TranscriptionConfig,
         model: str = "gpt-4o-transcribe",
         transcript_store: Optional[TranscriptStore] = None,
+        realtime_url: str = "",
     ) -> None:
-        # Build effective prompt with glossary terms appended
-        prompt = config.prompt
-        if config.glossary:
-            terms = ", ".join(config.glossary)
-            prompt += (
-                f"\n\nDomain vocabulary (ensure correct transcription): {terms}"
-            )
-            logger.info(f"Glossary injected into prompt ({len(config.glossary)} terms)")
-
         self.mic_session = OpenAIRealtimeSession(
             api_key=api_key,
             label="me",
             model=model,
             language=config.language,
-            prompt=prompt,
             vad_threshold=config.vad_threshold,
             vad_prefix_padding_ms=config.vad_prefix_padding_ms,
             vad_silence_duration_ms=config.vad_silence_duration_ms,
             noise_reduction=config.noise_reduction,
+            realtime_url=realtime_url,
         )
         self.system_session = OpenAIRealtimeSession(
             api_key=api_key,
             label="them",
             model=model,
             language=config.language,
-            prompt=prompt,
             vad_threshold=config.vad_threshold,
             vad_prefix_padding_ms=config.vad_prefix_padding_ms,
             vad_silence_duration_ms=config.vad_silence_duration_ms,
             noise_reduction=config.noise_reduction,
+            realtime_url=realtime_url,
         )
 
         # Wire up transcript store callbacks
@@ -65,10 +57,13 @@ class TranscriptionSessionPair:
                 transcript_store.finalize_turn
             )
 
-        # Error callback — set by the parent (ws_server)
+        # Callbacks — set by the parent (ws_server)
         self.on_error: Optional[Callable] = None
+        self.on_connected: Optional[Callable] = None
         self.mic_session.on_error = self._forward_error
         self.system_session.on_error = self._forward_error
+        self.mic_session.on_connected = self._forward_connected
+        self.system_session.on_connected = self._forward_connected
 
         self._tasks: list[asyncio.Task] = []
 
@@ -76,6 +71,11 @@ class TranscriptionSessionPair:
         """Forward OpenAI errors to the parent callback."""
         if self.on_error:
             await self.on_error(event)
+
+    async def _forward_connected(self, label: str) -> None:
+        """Forward OpenAI connection events to the parent callback."""
+        if self.on_connected:
+            await self.on_connected(label)
 
     async def start(self) -> None:
         """Start both transcription sessions concurrently."""
@@ -113,5 +113,5 @@ class TranscriptionSessionPair:
         await self.mic_session.send_audio(chunk)
 
     async def feed_system_audio(self, chunk: bytes) -> None:
-        """Feed a PCM audio chunk from system audio (BlackHole)."""
+        """Feed a PCM audio chunk from system audio (Core Audio Taps)."""
         await self.system_session.send_audio(chunk)
