@@ -13,7 +13,8 @@ A macOS meeting co-pilot that provides real-time transcription, question detecti
 │  AppState           │                          │  Audio Capture       │
 │  WebSocketClient    │                          │  OpenAI Realtime     │
 │  EventRouter        │                          │  Question Detection  │
-│  PythonManager      │                          │  RAG Engine (KB)     │
+│  SystemAudioCapture │                          │  RAG Engine (KB)     │
+│  PythonManager      │                          │                      │
 └─────────────────────┘                          └──────────────────────┘
 ```
 
@@ -22,7 +23,7 @@ A macOS meeting co-pilot that provides real-time transcription, question detecti
 - `ContentView.swift` — Main window with connection badge, panel navigation, and recording controls
 - `Views/` — TranscriptView, QuestionListView, KnowledgeBaseView, SettingsView, ActivityLogView, ErrorBannerView
 - `State/AppState.swift` — `@Observable` app state (transcript, questions, KB, settings, activity)
-- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, PythonManager
+- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, SystemAudioCapture, SetupManager, PythonManager
 - `Models/Protocol.swift` — Command/event protocol matching the backend
 
 ### Backend (Python)
@@ -55,7 +56,7 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
    uv sync
    ```
 3. Run the app from Xcode (Cmd+R) — it auto-launches the backend and connects via WebSocket
-5. Enter your OpenAI API key in Settings
+4. On first launch, the setup wizard will install prerequisites (uv, Python, dependencies) and prompt for your OpenAI API key
 
 ## Running the Backend Manually
 
@@ -89,5 +90,6 @@ All persisted data lives under `~/.listen/`:
 - `activity.jsonl` — activity log
 - `chromadb/` — vector store
 - `backend.pid` — single-instance guard
+- `ws_token` — per-session WebSocket auth token
 - `transcripts/` — saved transcript sessions
 - `rag_queries.jsonl` — RAG query analytics
