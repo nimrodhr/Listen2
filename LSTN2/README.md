@@ -4,34 +4,40 @@ A macOS meeting co-pilot that provides real-time transcription, question detecti
 
 ## Architecture
 
-**macOS app (SwiftUI)** communicates over WebSocket with a **Python backend** that handles audio capture, transcription, and intelligence.
+**macOS app (SwiftUI)** communicates over WebSocket with a **Python backend** that handles transcription and intelligence. Both mic and system audio are captured natively in Swift and streamed as tagged binary frames.
 
 ```
 ┌─────────────────────┐     WebSocket (8765)     ┌──────────────────────┐
 │   SwiftUI Frontend  │ ◄──────────────────────► │   Python Backend     │
-│                     │   command.* / event.*     │                      │
-│  AppState           │                          │  Audio Capture       │
-│  WebSocketClient    │                          │  OpenAI Realtime     │
-│  EventRouter        │                          │  Question Detection  │
-│  SystemAudioCapture │                          │  RAG Engine (KB)     │
-│  PythonManager      │                          │                      │
+│                     │  text: command.*/event.*  │                      │
+│  AppState (@Observable)  binary: tagged audio  │  OpenAI Realtime     │
+│  WebSocketClient                               │  Question Detection  │
+│  EventRouter                                   │  RAG Engine (KB)     │
+│  SystemAudioCapture                            │  Activity Logging    │
+│  MicAudioCapture                               │                      │
+│  PythonManager                                 │                      │
+│  SetupManager                                  │                      │
+│  KeychainManager                               │                      │
 └─────────────────────┘                          └──────────────────────┘
 ```
 
+**Audio capture**: System audio is captured natively in Swift via `AudioHardwareCreateProcessTap` (Core Audio Taps, macOS 14.2+). Mic audio is captured in Swift via `AVAudioEngine`. Both streams are converted to PCM16 24 kHz mono, prefixed with a 1-byte tag (`0x01` mic, `0x02` system), and sent as binary WebSocket frames.
+
 ### Frontend (Swift/SwiftUI)
 
-- `ContentView.swift` — Main window with connection badge, panel navigation, and recording controls
+- `ContentView.swift` — Main window with connection badge, panel navigation, recording controls, and elapsed-time display
 - `Views/` — TranscriptView, QuestionListView, KnowledgeBaseView, SettingsView, ActivityLogView, ErrorBannerView
+- `Views/Setup/` — SetupWizardView, StepProgressBar, EnvironmentStepView, APIKeyStepView, AudioConfigStepView
 - `State/AppState.swift` — `@Observable` app state (transcript, questions, KB, settings, activity)
-- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, SystemAudioCapture, SetupManager, PythonManager
+- `State/SetupState.swift` — Setup wizard state machine (steps, sub-steps, statuses, persistence)
+- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, SystemAudioCapture (+ MicAudioCapture), SetupManager, PythonManager, KeychainManager
 - `Models/Protocol.swift` — Command/event protocol matching the backend
 
 ### Backend (Python)
 
 Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 
-- Mic audio capture via sounddevice; system audio via native Core Audio Taps (macOS 14.2+)
-- OpenAI Realtime API transcription with session pairs
+- OpenAI Realtime API transcription with dual audio stream support
 - Transcript persistence to `~/.listen/transcripts/`
 - LLM-based question detection with rate limiting
 - RAG-based answering (hybrid vector + BM25 search, reranking)
@@ -39,39 +45,57 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 - Document ingestion (PDF, TXT, MD, DOCX) with chunking and preprocessing
 - RAG query logging for analytics
 - Text normalization and non-English filtering
+- Per-session WebSocket token auth + browser connection rejection
+- Single-instance guard via PID file + `fcntl.flock` advisory lock
 
 ## Requirements
 
 - macOS 14.2+ (Sonoma or later — required for Core Audio Taps)
 - Xcode 16+
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/) installed (`~/.local/bin/uv`)
 - OpenAI API key
+
+> **Note:** Python 3.11+ and [uv](https://docs.astral.sh/uv/) are required but are installed automatically by the setup wizard on first launch.
 
 ## Setup
 
 1. Clone the repo and open `LSTN2/LSTN2.xcodeproj` in Xcode
-2. Install the Python backend dependencies:
-   ```bash
-   cd backend
-   uv sync
-   ```
-3. Run the app from Xcode (Cmd+R) — it auto-launches the backend and connects via WebSocket
-4. On first launch, the setup wizard will install prerequisites (uv, Python, dependencies) and prompt for your OpenAI API key
+2. Build & run (Cmd+R)
+3. On first launch, the **setup wizard** walks through three steps:
+   - **Environment** — Installs uv, Python 3.13, and backend dependencies (with per-package transparency info)
+   - **API Key** — Enter your OpenAI API key (stored securely in the macOS Keychain)
+   - **Audio Config** — Informational screen; system audio is captured natively, no extra drivers needed
+4. The app auto-launches the backend and connects via WebSocket
 
-## Running the Backend Manually
+The wizard can be re-run from Settings at any time. Setup state is versioned — upgrading LSTN2 may re-trigger the wizard if steps have changed.
+
+### Manual backend setup (optional)
+
+If you prefer to install dependencies yourself:
 
 ```bash
 cd backend
+uv sync
 uv run python -m listen.main   # Starts WebSocket server on ws://127.0.0.1:8765
 ```
 
 ## Testing
+
+### Backend (Python)
 
 ```bash
 cd backend
 pytest                                    # All tests
 pytest tests/test_transcript_store.py -v  # Verbose single file
 ```
+
+### Frontend (Swift)
+
+Swift tests are in the `LSTN2Tests` target:
+
+- `EventRouterTests` — English-detection filtering (Latin, Cyrillic, CJK, Arabic, Hebrew, Korean, Japanese)
+- `ProtocolTests` — Event envelope parsing, command serialization, protocol version validation
+
+Run via Xcode (Cmd+U) or `xcodebuild test`.
 
 ## Features
 
@@ -81,15 +105,26 @@ pytest tests/test_transcript_store.py -v  # Verbose single file
 - **Knowledge Base** — Ingest documents (PDF, TXT, MD, DOCX) into a ChromaDB vector store
 - **Transcript Persistence** — Sessions saved to disk for later review
 - **Activity Log** — Frontend and backend event tracking with 24-hour retention
-- **Menu Bar** — Quick access via LSTN2 menu bar icon
+- **Setup Wizard** — Guided first-launch experience that installs all prerequisites and configures the app
+- **Secure API Key Storage** — OpenAI API key stored in macOS Keychain (migrated from plaintext on upgrade)
+- **Native Audio Capture** — System audio via Core Audio Taps and mic via AVAudioEngine — no virtual audio drivers required
+- **WebSocket Auth** — Per-session bearer token, browser connection rejection
+
+## Security
+
+- **API key storage**: Stored in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Legacy plaintext keys in `settings.json` are migrated automatically and blanked.
+- **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`, `0600` permissions) on startup. Frontend sends it as `Authorization: Bearer <token>`. Connections with an `Origin` header (browsers) are rejected.
+- **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. `PythonManager` kills stale processes on port 8765 only after verifying they are Python/uv processes.
+- **Settings file**: `~/.listen/settings.json` is written with `0600` permissions.
 
 ## Data
 
 All persisted data lives under `~/.listen/`:
-- `settings.json` — config (API keys, models, audio devices, thresholds)
+- `settings.json` — config (models, audio devices, thresholds) — API key no longer stored here
 - `activity.jsonl` — activity log
 - `chromadb/` — vector store
 - `backend.pid` — single-instance guard
-- `ws_token` — per-session WebSocket auth token
+- `backend.lock` — advisory file lock for single-instance enforcement
+- `ws_token` — per-session WebSocket auth token (deleted on exit)
 - `transcripts/` — saved transcript sessions
 - `rag_queries.jsonl` — RAG query analytics

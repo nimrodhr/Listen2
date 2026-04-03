@@ -23,22 +23,24 @@ pytest tests/test_transcript_store.py -v  # Single test file
 ┌─────────────────────┐     WebSocket (8765)     ┌──────────────────────┐
 │   SwiftUI Frontend  │ ◄──────────────────────► │   Python Backend     │
 │                     │  text: command.*/event.*  │                      │
-│  AppState (@Observable)  binary: system audio  │  Mic → Transcribe   │
+│  AppState (@Observable)  binary: tagged audio  │  OpenAI Realtime     │
 │  WebSocketClient                               │  Question Detection  │
 │  EventRouter                                   │  RAG Engine (KB)     │
 │  SystemAudioCapture                            │  Activity Logging    │
+│  MicAudioCapture                               │                      │
 │  PythonManager                                 │                      │
+│  SetupManager / KeychainManager                │                      │
 └─────────────────────┘                          └──────────────────────┘
 ```
 
-**Audio capture**: System audio is captured natively in Swift via `AudioHardwareCreateProcessTap` (Core Audio Taps, macOS 14.2+) and streamed to the backend as binary WebSocket frames. Microphone audio is captured in the Python backend via `sounddevice`.
+**Audio capture**: System audio is captured natively in Swift via `AudioHardwareCreateProcessTap` (Core Audio Taps, macOS 14.2+). Mic audio is captured in Swift via `AVAudioEngine`. Both streams are converted to PCM16 24 kHz mono, prefixed with a 1-byte tag (`0x01` mic, `0x02` system), and sent as binary WebSocket frames.
 
-**Frontend** (Swift, `LSTN2/LSTN2/`): SwiftUI app with `@Observable` AppState. No external dependencies.
-**Backend** (Python 3.11+, `backend/src/listen/`): Async pipelines for audio capture, OpenAI Realtime transcription, LLM question detection, and RAG-based answering with ChromaDB.
+**Frontend** (Swift, `LSTN2/LSTN2/`): SwiftUI app with `@Observable` AppState. No external dependencies. Includes setup wizard, Keychain-based API key storage, and native dual audio capture.
+**Backend** (Python 3.11+, `backend/src/listen/`): Async pipelines for OpenAI Realtime transcription, LLM question detection, and RAG-based answering with ChromaDB. Per-session WS token auth.
 
 ### WebSocket Protocol
 - Frontend → Backend (text): `command.*` (e.g., `command.start_recording`, `command.query_kb`)
-- Frontend → Backend (binary): Raw PCM16 24kHz mono audio chunks from system audio capture
+- Frontend → Backend (binary): Tagged PCM16 24kHz mono audio (1-byte prefix: `0x01` mic, `0x02` system)
 - Backend → Frontend (text): `event.*` (e.g., `event.transcript.delta`, `event.question.answered`)
 - Protocol types defined in both `LSTN2/Models/Protocol.swift` and `backend/src/listen/server/protocol.py` — keep in sync.
 
@@ -48,18 +50,21 @@ pytest tests/test_transcript_store.py -v  # Single test file
 | File | Purpose |
 |------|---------|
 | `LSTN2App.swift` | App entry point, lifecycle, backend process management |
-| `ContentView.swift` | Main UI container with panel navigation |
-| `AppState.swift` | Central observable state (transcript, questions, KB, settings) |
+| `ContentView.swift` | Main UI container with panel navigation, dual audio streaming |
+| `AppState.swift` | Central observable state (transcript, questions, KB, settings); Keychain-first API key loading |
+| `SetupState.swift` | Setup wizard state machine (steps, sub-steps, statuses, versioned persistence) |
 | `WebSocketClient.swift` | WS connection with exponential backoff reconnect |
 | `EventRouter.swift` | Parses events, filters non-English, updates AppState |
-| `SystemAudioCapture.swift` | Captures system audio via Core Audio Taps (macOS 14.2+) |
+| `SystemAudioCapture.swift` | System audio via Core Audio Taps + mic audio via AVAudioEngine (macOS 14.2+) |
 | `PythonManager.swift` | Launches/kills backend subprocess, stale process cleanup |
+| `SetupManager.swift` | Drives setup wizard: installs uv, Python, deps; saves API key to Keychain |
+| `KeychainManager.swift` | Secure API key storage via macOS Keychain (save/load/delete) |
 
 ### Python
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point, signal handling, single-instance PID guard, WS token generation |
-| `server/ws_server.py` | WebSocket server, command routing, session coordination |
+| `main.py` | Entry point, signal handling, PID + flock single-instance guard, WS token generation |
+| `server/ws_server.py` | WebSocket server, command routing, session coordination, bearer token auth, tagged audio routing |
 | `config.py` | Pydantic settings schema, persists to `~/.listen/settings.json` |
 | `transcription/openai_realtime.py` | OpenAI Realtime API session (per audio stream) |
 | `intelligence/question_detector.py` | LLM-based question extraction from transcript |
@@ -69,10 +74,11 @@ pytest tests/test_transcript_store.py -v  # Single test file
 ## Data Locations
 
 All persisted data lives under `~/.listen/`:
-- `settings.json` — shared config (API keys, models, audio devices, thresholds)
+- `settings.json` — config (models, audio devices, thresholds) — API key stored in Keychain, not here
 - `activity.jsonl` — activity log with 24-hour retention
 - `chromadb/` — vector store
 - `backend.pid` — single-instance guard
+- `backend.lock` — advisory file lock for single-instance enforcement
 - `ws_token` — per-session WebSocket auth token (deleted on exit)
 - `transcripts/` — saved transcript sessions
 
@@ -80,7 +86,7 @@ All persisted data lives under `~/.listen/`:
 
 - **Protocol sync**: `Protocol.swift` and `protocol.py` define the same message types — changes must be mirrored in both.
 - **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`) on startup. Frontend reads it and sends as `Authorization: Bearer <token>`. Connections from browsers (Origin header) are rejected.
-- **Single instance**: Backend uses PID file + port check. Swift's `PythonManager` kills stale processes on port 8765 (only after verifying they are Python/uv processes).
+- **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. Swift's `PythonManager` kills stale processes on port 8765 (only after verifying they are Python/uv processes).
 - **English-only filtering**: Both frontend (Swift regex) and backend (Python regex) discard non-Latin script turns entirely. Defense-in-depth.
 - **Transcript dedup**: Turns keyed by `turn_id`. Delta events create/update; completion finalizes. Non-English turns are deleted wholesale.
 - **Settings not auto-synced**: Frontend settings changes require explicit `update_settings` command to propagate to backend.
@@ -103,14 +109,21 @@ All persisted data lives under `~/.listen/`:
 - Custom exception hierarchy (`ListenError` → `AudioError`, `TranscriptionError`, etc.)
 - `asyncio.Lock` for thread-safe transcript accumulation
 
+- **API key security**: API key is stored in macOS Keychain via `KeychainManager`. Legacy plaintext keys in `settings.json` are migrated on first load and blanked. `settings.json` written with `0600` permissions.
+- **Setup wizard versioning**: `SetupState` tracks a setup version (currently `3`). Bumping the version forces re-setup on next launch. Version 2→3 removed the BlackHole audio driver step.
+
 ## Testing
 
 ```bash
+# Backend (Python)
 cd backend
 pytest                                    # All tests
 pytest tests/test_transcript_store.py -v  # Verbose single file
+
+# Frontend (Swift) — run via Xcode (Cmd+U)
+# LSTN2Tests target: EventRouterTests, ProtocolTests
 ```
 
 - pytest config in `pyproject.toml`: `asyncio_mode = "auto"`, `testpaths = ["tests"]`
 - Fixtures in `conftest.py` (e.g., `sample_settings_data`)
-- No Swift tests currently
+- Swift tests use the Testing framework (`@Test`): `EventRouterTests` (English detection), `ProtocolTests` (event parsing, command serialization)

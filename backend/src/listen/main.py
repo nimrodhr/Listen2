@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import fcntl
 import logging
 import os
 import secrets
@@ -14,8 +15,13 @@ from listen.utils.logging import setup_logging
 
 logger = logging.getLogger("listen.main")
 
-PID_FILE = Path.home() / ".listen" / "backend.pid"
-WS_TOKEN_FILE = Path.home() / ".listen" / "ws_token"
+LISTEN_DIR = Path.home() / ".listen"
+PID_FILE = LISTEN_DIR / "backend.pid"
+LOCK_FILE = LISTEN_DIR / "backend.lock"
+WS_TOKEN_FILE = LISTEN_DIR / "ws_token"
+
+# Keep reference to the lock file descriptor so it stays open (and locked)
+_lock_fd = None
 
 
 def _handle_unhandled_exception(exc_type, exc_value, exc_tb):
@@ -37,16 +43,33 @@ def _handle_asyncio_exception(loop, context):
 
 
 def _kill_stale_instance() -> None:
-    """Kill any stale backend from a previous run using the PID file."""
+    """Kill any stale backend from a previous run.
+
+    Uses an advisory file lock to detect whether a previous instance is
+    truly running.  If the lock is held, reads the PID file to send SIGTERM.
+    """
+    LISTEN_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Try to acquire the lock — if we get it, no other instance is running
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Lock acquired — no running instance. Clean up stale PID file.
+        os.close(fd)
+        PID_FILE.unlink(missing_ok=True)
+        WS_TOKEN_FILE.unlink(missing_ok=True)
+        return
+    except OSError:
+        pass  # Lock held — another instance is running
+
+    # Lock is held by another process — read its PID and kill it
     if not PID_FILE.exists():
         return
     try:
         old_pid = int(PID_FILE.read_text().strip())
-        # Check if the process is still alive
-        os.kill(old_pid, 0)
+        os.kill(old_pid, 0)  # Check if alive
         logger.warning(f"Killing stale backend (pid={old_pid})")
         os.kill(old_pid, signal.SIGTERM)
-        # Wait briefly for it to exit
         import time
         for _ in range(10):
             time.sleep(0.2)
@@ -55,7 +78,6 @@ def _kill_stale_instance() -> None:
             except OSError:
                 break
         else:
-            # Still alive — force kill
             logger.warning(f"Force-killing stale backend (pid={old_pid})")
             os.kill(old_pid, signal.SIGKILL)
     except (ValueError, OSError):
@@ -65,15 +87,33 @@ def _kill_stale_instance() -> None:
         WS_TOKEN_FILE.unlink(missing_ok=True)
 
 
-def _write_pid_file() -> None:
-    """Write our PID to the PID file."""
-    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+def _acquire_lock() -> None:
+    """Acquire the instance lock and write PID file atomically."""
+    global _lock_fd
+    LISTEN_DIR.mkdir(parents=True, exist_ok=True)
+    _lock_fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(_lock_fd)
+        _lock_fd = None
+        logger.error("Another backend instance is already running")
+        sys.exit(1)
+    # Write PID for informational purposes
     PID_FILE.write_text(str(os.getpid()))
 
 
-def _remove_pid_file() -> None:
-    """Remove the PID file on exit."""
+def _release_lock() -> None:
+    """Release the instance lock and clean up PID file."""
+    global _lock_fd
     PID_FILE.unlink(missing_ok=True)
+    if _lock_fd is not None:
+        try:
+            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+            os.close(_lock_fd)
+        except OSError:
+            pass
+        _lock_fd = None
 
 
 def _write_ws_token() -> str:
@@ -99,10 +139,10 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(_handle_asyncio_exception)
 
-    # Single-instance guard: kill any stale backend, then claim the PID file
+    # Single-instance guard: kill any stale backend, then claim the lock + PID
     _kill_stale_instance()
-    _write_pid_file()
-    atexit.register(_remove_pid_file)
+    _acquire_lock()
+    atexit.register(_release_lock)
 
     ws_token = _write_ws_token()
     atexit.register(_remove_ws_token)
@@ -125,7 +165,7 @@ async def main() -> None:
         raise
     finally:
         logger.info("Listen backend shutting down")
-        _remove_pid_file()
+        _release_lock()
         _remove_ws_token()
 
 
