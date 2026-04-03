@@ -13,13 +13,10 @@ Step-by-step guide to install and set up LSTN2 on your Mac. The app is signed an
 
 ## Step 1 — Download and install
 
-Download the latest release from the [Releases](https://github.com/nimrodhr/Listen2/releases) page.
+Download the latest `.app` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page.
 
-The app is signed and notarized by Apple, so you can open it directly — no Gatekeeper warnings.
-
-1. Open the downloaded `.dmg` (or `.zip`)
-2. Drag **LSTN2** to your **Applications** folder
-3. Launch LSTN2 from Applications
+1. Move **LSTN2.app** to your **Applications** folder
+2. Launch LSTN2
 
 <details>
 <summary>Building from source (for developers)</summary>

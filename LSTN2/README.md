@@ -59,7 +59,7 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 
 ### Download (recommended)
 
-Download the latest release from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. The app is signed and notarized by Apple — just drag it to Applications and launch.
+Download the latest `.app` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. Move it to Applications and launch.
 
 ### Build from source
 
@@ -122,7 +122,7 @@ Run via Xcode (Cmd+U) or `xcodebuild test`.
 
 ## Security
 
-- **Apple notarized**: The app is signed with an Apple Developer certificate and notarized by Apple, ensuring it has been scanned for malware and is safe to run.
+- **Apple approved**: The app is signed and notarized by Apple.
 - **API key storage**: Stored in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Legacy plaintext keys in `settings.json` are migrated automatically and blanked.
 - **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`, `0600` permissions) on startup. Frontend sends it as `Authorization: Bearer <token>`. Connections with an `Origin` header (browsers) are rejected.
 - **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. `PythonManager` kills stale processes on port 8765 only after verifying they are Python/uv processes.
