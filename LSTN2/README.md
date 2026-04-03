@@ -1,6 +1,6 @@
 # LSTN2
 
-A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base.
+A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base. Signed with an Apple Developer ID.
 
 ## Architecture
 
@@ -59,7 +59,7 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 
 ### Download (recommended)
 
-Download the latest `LSTN2.dmg` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. Open the DMG, drag LSTN2.app to Applications, and launch. On first launch, macOS will block the app — go to **System Settings > Privacy & Security** and click **Open Anyway**. See [INSTALLATION.md](INSTALLATION.md) for detailed steps.
+Download the latest `LSTN2.app` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. Move it to Applications and launch.
 
 ### Build from source
 
@@ -122,7 +122,7 @@ Run via Xcode (Cmd+U) or `xcodebuild test`.
 
 ## Security
 
-- **Unsigned app**: The app is not signed with an Apple Developer ID. On first launch, approve it via System Settings > Privacy & Security > Open Anyway.
+- **Signed app**: The app is signed with an Apple Developer ID.
 - **API key storage**: Stored in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Legacy plaintext keys in `settings.json` are migrated automatically and blanked.
 - **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`, `0600` permissions) on startup. Frontend sends it as `Authorization: Bearer <token>`. Connections with an `Origin` header (browsers) are rejected.
 - **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. `PythonManager` kills stale processes on port 8765 only after verifying they are Python/uv processes.
