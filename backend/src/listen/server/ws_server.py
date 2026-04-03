@@ -84,6 +84,15 @@ class ListenWSServer:
         self._dropped_audio_frames: int = 0
         self._last_drop_log_time: float = 0.0
 
+        # Command rate limiting (seconds between allowed calls)
+        self._rate_limits: dict[str, float] = {
+            "command.query_kb": 1.0,
+            "command.ingest_kb": 10.0,
+            "command.flush_kb": 30.0,
+            "command.update_settings": 2.0,
+        }
+        self._last_command_time: dict[str, float] = {}
+
         # Activity log
         log_path = Path.home() / ".listen" / "activity.jsonl"
         self._activity_log = ActivityLog(log_path)
@@ -125,7 +134,15 @@ class ListenWSServer:
         await self._server.wait_closed()
 
     async def _init_vector_store(self) -> None:
-        """Initialize the vector store in the background."""
+        """Initialize the vector store in the background.
+
+        Skips initialization when no API key is configured — the frontend
+        stores the key in macOS Keychain and sends it via update_settings
+        after connecting, which triggers a deferred init.
+        """
+        if not self.settings.api_keys.openai:
+            logger.info("No API key yet — deferring vector store init until key arrives")
+            return
         try:
             self._vector_store = await asyncio.to_thread(
                 VectorStore,
@@ -137,7 +154,6 @@ class ListenWSServer:
         except Exception as e:
             logger.warning(f"Failed to initialize vector store: {e}")
             self._activity_log.add("knowledge", "warning", f"Vector store failed to initialize: {e}")
-            # Notify connected client that KB is permanently unavailable
             await self.send_error(
                 "KB_INIT_FAILED",
                 "Knowledge base failed to initialize. RAG features are unavailable.",
@@ -427,6 +443,20 @@ class ListenWSServer:
 
             handler = COMMAND_HANDLERS.get(msg_type)
             if handler:
+                # Rate-limit expensive commands
+                min_interval = self._rate_limits.get(msg_type)
+                if min_interval:
+                    now = time.time()
+                    last = self._last_command_time.get(msg_type, 0.0)
+                    if now - last < min_interval:
+                        logger.warning(f"Rate-limited command: {msg_type}")
+                        await self.send_error(
+                            "RATE_LIMITED",
+                            "Too many requests. Please wait before retrying.",
+                            "server",
+                        )
+                        return
+                    self._last_command_time[msg_type] = now
                 await handler(self, msg)
             else:
                 logger.warning(f"Unknown command type: {msg_type}")
@@ -646,8 +676,11 @@ class ListenWSServer:
         return data
 
     async def update_settings(self, settings_data: dict) -> None:
-        """Update and persist settings, merging with existing settings."""
-        # Merge with existing settings to avoid resetting unset fields
+        """Update and persist settings, merging with existing settings.
+
+        API keys are kept in-memory only for this session and never
+        written to disk — the frontend stores them in the macOS Keychain.
+        """
         current = self.settings.model_dump()
         if "settings" in settings_data:
             settings_data = settings_data["settings"]
@@ -657,7 +690,16 @@ class ListenWSServer:
             else:
                 current[key] = value
         self.settings = Settings.model_validate(current)
-        save_settings(self.settings)
+
+        # Persist everything except API keys to disk
+        disk_settings = self.settings.model_copy(deep=True)
+        disk_settings.api_keys.openai = ""
+        save_settings(disk_settings)
+        # Re-initialize vector store if API key just became available
+        if self.settings.api_keys.openai and not self._vector_store:
+            logger.info("API key received — initializing vector store")
+            asyncio.create_task(self._init_vector_store())
+
         try:
             await self.send(
                 SettingsUpdatedEvent(settings=self._redacted_settings())
@@ -691,10 +733,14 @@ class ListenWSServer:
         ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
 
         # Build file list from either directory scan or explicit file paths
+        home = Path.home().resolve()
         file_paths: list[Path] = []
         if files:
             for f in files:
                 p = Path(f).resolve()
+                if not p.is_relative_to(home):
+                    logger.warning(f"Path outside home directory, skipping: {f}")
+                    continue
                 if not p.is_file():
                     logger.warning(f"File not found, skipping: {f}")
                     continue
@@ -703,11 +749,14 @@ class ListenWSServer:
                     continue
                 file_paths.append(p)
         elif directory:
-            dir_path = Path(directory)
+            dir_path = Path(directory).resolve()
+            if not dir_path.is_relative_to(home):
+                await self.send_error("KB_PATH_DENIED", "Directory must be within home directory", "kb")
+                return
             if not dir_path.is_dir():
                 await self.send_error("KB_DIR_NOT_FOUND", f"Directory not found: {directory}", "kb")
                 return
-            file_paths = list(scan_directory(directory))
+            file_paths = [p for p in scan_directory(directory) if p.resolve().is_relative_to(home)]
         else:
             await self.send_error("KB_NO_INPUT", "No directory or files provided", "kb")
             return
@@ -827,7 +876,7 @@ class ListenWSServer:
                     sources=[
                         {
                             "file_name": s.get("file_name", ""),
-                            "source_path": s.get("source", ""),
+                            "source_path": Path(s.get("source", "")).name if s.get("source") else "",
                             "chunks": s.get("chunks", 0),
                             "last_indexed": "",
                         }

@@ -59,6 +59,14 @@ struct ContentView: View {
                                 detail: apiKeyChanged ? "api_key updated" : "api_key unchanged"
                             )
 
+                            // Persist API key to Keychain when changed
+                            if apiKeyChanged {
+                                let trimmed = saved.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !trimmed.isEmpty {
+                                    _ = KeychainManager.save(key: "openai-api-key", value: trimmed)
+                                }
+                            }
+
                             // Sync settings to backend
                             syncSettingsToBackend()
 

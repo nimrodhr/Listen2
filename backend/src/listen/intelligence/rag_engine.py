@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from listen.intelligence.llm_client import LLMClient
@@ -91,7 +92,7 @@ class _QueryCache:
     @staticmethod
     def make_key(query: str, top_k: int, collection: str) -> str:
         raw = f"{query}|{top_k}|{collection}"
-        return hashlib.md5(raw.encode()).hexdigest()
+        return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class RAGEngine:
@@ -211,7 +212,7 @@ class RAGEngine:
                 seen_files.add(file_key)
                 sources.append({
                     "file_name": match["file_name"],
-                    "file_path": match["source"],
+                    "file_path": Path(match["source"]).name,
                     "page": match.get("page"),
                     "chunk_preview": match["text"][:150] + "..."
                     if len(match["text"]) > 150

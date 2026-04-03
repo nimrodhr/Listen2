@@ -41,7 +41,7 @@ struct APIKeyStepView: View {
                     )
                     infoRow(
                         "Where it's stored",
-                        "Locally at ~/.listen/settings.json with file permissions 600 (only your user can read it). The key never leaves your machine except when sent directly to OpenAI's API over HTTPS."
+                        "Securely in the macOS Keychain, encrypted at rest. The key never leaves your machine except when sent directly to OpenAI's API over HTTPS."
                     )
                     infoRow(
                         "Cost",

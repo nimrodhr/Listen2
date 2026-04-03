@@ -104,16 +104,20 @@ def _acquire_lock() -> None:
 
 
 def _release_lock() -> None:
-    """Release the instance lock and clean up PID file."""
+    """Release the instance lock and clean up PID file.
+
+    Safe to call multiple times (atexit + finally).
+    """
     global _lock_fd
+    if _lock_fd is None:
+        return
     PID_FILE.unlink(missing_ok=True)
-    if _lock_fd is not None:
-        try:
-            fcntl.flock(_lock_fd, fcntl.LOCK_UN)
-            os.close(_lock_fd)
-        except OSError:
-            pass
-        _lock_fd = None
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+        os.close(_lock_fd)
+    except OSError:
+        pass
+    _lock_fd = None
 
 
 def _write_ws_token() -> str:

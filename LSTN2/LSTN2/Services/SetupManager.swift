@@ -288,41 +288,42 @@ final class SetupManager {
             return false
         }
 
+        // Store in macOS Keychain (encrypted at rest)
+        guard KeychainManager.save(key: "openai-api-key", value: trimmed) else {
+            state.stepStatuses[.apiKey] = .failed(error: "Failed to save API key to Keychain")
+            return false
+        }
+
+        // Remove any legacy plaintext key from settings.json
         let listenDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".listen")
         let settingsPath = listenDir.appendingPathComponent("settings.json")
-
         do {
             try FileManager.default.createDirectory(at: listenDir, withIntermediateDirectories: true)
-
             var settings: [String: Any] = [:]
             if let data = try? Data(contentsOf: settingsPath),
                let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 settings = existing
             }
-
+            // Blank the key in JSON so it's never stored in plaintext
             var apiKeys = settings["api_keys"] as? [String: Any] ?? [:]
-            apiKeys["openai"] = trimmed
+            apiKeys["openai"] = ""
             settings["api_keys"] = apiKeys
 
             let data = try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: settingsPath, options: .atomic)
-
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: settingsPath.path
             )
-
-            state.stepStatuses[.apiKey] = .completed
-            state.apiKeyInput = trimmed
-            log.info("API key saved to settings.json")
-            return true
         } catch {
-            let msg = "Failed to save API key: \(error.localizedDescription)"
-            state.stepStatuses[.apiKey] = .failed(error: msg)
-            log.error("\(msg)")
-            return false
+            log.warning("Could not update settings.json to remove legacy key: \(error.localizedDescription)")
         }
+
+        state.stepStatuses[.apiKey] = .completed
+        state.apiKeyInput = trimmed
+        log.info("API key saved to Keychain")
+        return true
     }
 
     // MARK: - Process Runner

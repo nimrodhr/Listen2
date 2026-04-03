@@ -336,12 +336,19 @@ class VectorStore:
     # --- Existing methods ---
 
     def delete_by_source(self, source_path: str) -> None:
-        """Remove all chunks from a specific source file."""
+        """Remove all chunks from a specific source file.
+
+        Accepts either a full path or just a filename. Tries exact match
+        on the 'source' metadata first, then falls back to 'file_name'.
+        """
         results = self._collection.get(where={"source": source_path})
+        if not results or not results["ids"]:
+            # Fallback: match by file_name (frontend sends sanitized names)
+            results = self._collection.get(where={"file_name": source_path})
         if results and results["ids"]:
             self._collection.delete(ids=results["ids"])
             self._bm25_dirty = True
-            logger.info(f"Deleted {len(results['ids'])} chunks from {source_path}")
+            logger.info(f"Deleted {len(results['ids'])} chunks for {source_path}")
 
     def list_sources(self) -> list[dict]:
         """List all indexed source files with chunk counts."""

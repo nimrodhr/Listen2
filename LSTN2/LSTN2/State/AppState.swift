@@ -154,19 +154,39 @@ final class AppState {
         var transcriptionModel: String = "gpt-4o-transcribe"
         var qaModel: String = "gpt-4o-mini"
 
-        /// Load settings from the shared settings.json (same file the backend uses).
+        /// Load settings from Keychain (API key) and settings.json (other prefs).
         static func loadFromDisk() -> Settings {
+            var s = Settings()
+
+            // Load API key from Keychain
+            if let keychainKey = KeychainManager.load(key: "openai-api-key"), !keychainKey.isEmpty {
+                s.apiKey = keychainKey
+            }
+
             let path = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".listen/settings.json")
             guard let data = try? Data(contentsOf: path),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return Settings() }
+            else { return s }
 
-            var s = Settings()
-            if let keys = json["api_keys"] as? [String: Any],
-               let key = keys["openai"] as? String {
-                s.apiKey = key
+            // Migrate legacy plaintext key to Keychain
+            if s.apiKey.isEmpty,
+               let keys = json["api_keys"] as? [String: Any],
+               let legacyKey = keys["openai"] as? String,
+               !legacyKey.isEmpty {
+                s.apiKey = legacyKey
+                _ = KeychainManager.save(key: "openai-api-key", value: legacyKey)
+                // Blank the key in JSON
+                var mutableJson = json
+                if var mutableKeys = mutableJson["api_keys"] as? [String: Any] {
+                    mutableKeys["openai"] = ""
+                    mutableJson["api_keys"] = mutableKeys
+                    if let updated = try? JSONSerialization.data(withJSONObject: mutableJson, options: [.prettyPrinted, .sortedKeys]) {
+                        try? updated.write(to: path, options: .atomic)
+                    }
+                }
             }
+
             if let audio = json["audio"] as? [String: Any] {
                 s.micDeviceID = audio["mic_device_id"] as? Int
             }
