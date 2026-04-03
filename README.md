@@ -1,131 +1,141 @@
 # LSTN2
 
-A macOS meeting co-pilot that provides real-time transcription, automatic question detection, and context-aware Q&A — powered by OpenAI and a local knowledge base.
-
-## Features
-
-- **Live Transcription** — Dual-stream capture (microphone + native system audio via Core Audio Taps) with real-time speaker-labeled transcription via OpenAI Realtime API
-- **Automatic Question Detection** — Identifies questions in conversation, categorized by type (factual, opinion, clarification, action item)
-- **RAG-Powered Answers** — Answers detected questions using your knowledge base with source citations (hybrid vector + BM25 search with reranking)
-- **Knowledge Base** — Ingest documents (PDF, TXT, MD, DOCX) into a local ChromaDB vector store
-- **Transcript Persistence** — Sessions saved to disk with export support
-- **Activity Log** — Event tracking with 24-hour retention
-- **Menu Bar Access** — Quick toggle via the LSTN2 menu bar icon
-- **Guided Setup Wizard** — Step-by-step first-run wizard that installs prerequisites, configures audio, and validates the environment. Re-runnable from Settings.
+A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base. Signed with an Apple Developer ID.
 
 ## Architecture
+
+**macOS app (SwiftUI)** communicates over WebSocket with a **Python backend** that handles transcription and intelligence. Both mic and system audio are captured natively in Swift and streamed as tagged binary frames.
 
 ```
 ┌─────────────────────┐     WebSocket (8765)     ┌──────────────────────┐
 │   SwiftUI Frontend  │ ◄──────────────────────► │   Python Backend     │
-│                     │   command.* / event.*     │                      │
-│  AppState           │                          │  Audio Capture       │
-│  WebSocketClient    │                          │  OpenAI Realtime     │
-│  EventRouter        │                          │  Question Detection  │
-│  PythonManager      │                          │  RAG Engine (KB)     │
+│                     │  text: command.*/event.*  │                      │
+│  AppState (@Observable)  binary: tagged audio  │  OpenAI Realtime     │
+│  WebSocketClient                               │  Question Detection  │
+│  EventRouter                                   │  RAG Engine (KB)     │
+│  SystemAudioCapture                            │  Activity Logging    │
+│  MicAudioCapture                               │                      │
+│  PythonManager                                 │                      │
+│  SetupManager                                  │                      │
+│  KeychainManager                               │                      │
 └─────────────────────┘                          └──────────────────────┘
 ```
 
-The **SwiftUI frontend** handles UI and state management. The **Python backend** runs async pipelines for audio capture, transcription, intelligence, and knowledge base operations. They communicate over a local WebSocket using a typed `command.*` / `event.*` protocol.
+**Audio capture**: System audio is captured natively in Swift via `AudioHardwareCreateProcessTap` (Core Audio Taps, macOS 14.2+). Mic audio is captured in Swift via `AVAudioEngine`. Both streams are converted to PCM16 24 kHz mono, prefixed with a 1-byte tag (`0x01` mic, `0x02` system), and sent as binary WebSocket frames.
+
+### Frontend (Swift/SwiftUI)
+
+- `ContentView.swift` — Main window with connection badge, panel navigation, recording controls, and elapsed-time display
+- `Views/` — TranscriptView, QuestionListView, KnowledgeBaseView, SettingsView, ActivityLogView, ErrorBannerView
+- `Views/Setup/` — SetupWizardView, StepProgressBar, EnvironmentStepView, APIKeyStepView, AudioConfigStepView
+- `State/AppState.swift` — `@Observable` app state (transcript, questions, KB, settings, activity)
+- `State/SetupState.swift` — Setup wizard state machine (steps, sub-steps, statuses, persistence)
+- `Services/` — WebSocketClient, EventRouter, AudioDeviceService, SystemAudioCapture (+ MicAudioCapture), SetupManager, PythonManager, KeychainManager
+- `Models/Protocol.swift` — Command/event protocol matching the backend
+
+### Backend (Python)
+
+Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
+
+- OpenAI Realtime API transcription with dual audio stream support
+- Transcript persistence to `~/.listen/transcripts/`
+- LLM-based question detection with rate limiting
+- RAG-based answering (hybrid vector + BM25 search, reranking)
+- ChromaDB vector store for knowledge base
+- Document ingestion (PDF, TXT, MD, DOCX) with chunking and preprocessing
+- RAG query logging for analytics
+- Text normalization and non-English filtering
+- Per-session WebSocket token auth + browser connection rejection
+- Single-instance guard via PID file + `fcntl.flock` advisory lock
 
 ## Requirements
 
 - macOS 14.2+ (Sonoma or later — required for Core Audio Taps)
-- Xcode 16+
 - OpenAI API key
 
-> The setup wizard automatically installs [uv](https://docs.astral.sh/uv/), Python 3.13, and backend dependencies. System audio capture works natively — no third-party audio drivers needed.
+> **Note:** Python 3.11+ and [uv](https://docs.astral.sh/uv/) are required but are installed automatically by the setup wizard on first launch.
 
 ## Setup
 
-1. **Clone the repo:**
-   ```bash
-   git clone https://github.com/nimrodhr/Listen2.git
-   cd Listen2
-   ```
+### Download (recommended)
 
-2. **Run the app** — Open `LSTN2/LSTN2.xcodeproj` in Xcode and press Cmd+R.
+Download the latest `LSTN2.app` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. Move it to Applications and launch.
 
-3. **Follow the Setup Wizard** — On first launch, a guided wizard walks you through:
-   - **Environment** — Installs `uv`, Python 3.13, and backend dependencies
-   - **API Key** — Enter your OpenAI API key (can be skipped and added later in Settings)
-   - **Audio Config** — Select your microphone in Settings. System audio is captured automatically via native macOS APIs (you'll be prompted to grant permission on first recording).
+### Build from source
 
-   The wizard detects what's already installed and skips completed steps. You can re-run it anytime from **Settings > Re-run Setup Wizard**.
+Requires Xcode 16+:
 
-## Running the Backend Manually
+1. Clone the repo and open `LSTN2/LSTN2.xcodeproj` in Xcode
+2. Build & run (Cmd+R)
+
+### First launch
+
+On first launch, the **setup wizard** walks through three steps:
+   - **Environment** — Installs uv, Python 3.13, and backend dependencies (with per-package transparency info)
+   - **API Key** — Enter your OpenAI API key (stored securely in the macOS Keychain)
+   - **Audio Config** — Informational screen; system audio is captured natively, no extra drivers needed
+The app auto-launches the backend and connects via WebSocket.
+
+The wizard can be re-run from Settings at any time. Setup state is versioned — upgrading LSTN2 may re-trigger the wizard if steps have changed.
+
+### Manual backend setup (optional)
+
+If you prefer to install dependencies yourself:
 
 ```bash
 cd backend
+uv sync
 uv run python -m listen.main   # Starts WebSocket server on ws://127.0.0.1:8765
 ```
 
 ## Testing
 
+### Backend (Python)
+
 ```bash
 cd backend
 pytest                                    # All tests
-pytest tests/test_transcript_store.py -v  # Single test file
+pytest tests/test_transcript_store.py -v  # Verbose single file
 ```
 
-## Project Structure
+### Frontend (Swift)
 
-```
-LSTN2/LSTN2/                   # SwiftUI frontend
-├── LSTN2App.swift             # App entry point, lifecycle, wizard flow
-├── ContentView.swift          # Main window with panel navigation
-├── State/
-│   ├── AppState.swift         # @Observable app state
-│   └── SetupState.swift       # Setup wizard state & persistence
-├── Services/
-│   ├── WebSocketClient.swift  # WS connection with reconnect
-│   ├── EventRouter.swift      # Event parsing & state updates
-│   ├── PythonManager.swift    # Backend subprocess management
-│   ├── SetupManager.swift     # Prerequisite checks & installation
-│   ├── SystemAudioCapture.swift # System audio via Core Audio Taps (macOS 14.2+)
-│   └── AudioDeviceService.swift # Audio device enumeration
-├── Views/
-│   ├── Setup/                 # Setup wizard UI
-│   │   ├── SetupWizardView.swift
-│   │   ├── StepProgressBar.swift
-│   │   └── Steps/             # Per-step views (Environment, API Key, Audio)
-│   ├── SettingsView.swift     # Settings panel with re-run wizard button
-│   └── ...                    # Transcript, Questions, KB, Activity views
-└── Models/Protocol.swift      # WebSocket protocol types
+Swift tests are in the `LSTN2Tests` target:
 
-backend/                       # Python backend
-├── src/listen/
-│   ├── main.py                # Entry point, PID guard
-│   ├── config.py              # Pydantic settings schema
-│   ├── server/                # WebSocket server, command routing
-│   ├── audio/                 # Microphone capture, resampling
-│   ├── transcription/         # OpenAI Realtime sessions, persistence
-│   ├── intelligence/          # Question detection, RAG engine, LLM client
-│   └── knowledge/             # ChromaDB vector store, document ingestion
-└── tests/
-```
+- `EventRouterTests` — English-detection filtering (Latin, Cyrillic, CJK, Arabic, Hebrew, Korean, Japanese)
+- `ProtocolTests` — Event envelope parsing, command serialization, protocol version validation
+
+Run via Xcode (Cmd+U) or `xcodebuild test`.
+
+## Features
+
+- **Live Transcription** — Real-time dual-stream transcription (mic + system audio) with speaker labels
+- **Question Detection** — Automatically detects questions in conversation, categorized by type (factual, opinion, clarification, action item)
+- **RAG Q&A** — Answers questions using knowledge base context with source citations
+- **Knowledge Base** — Ingest documents (PDF, TXT, MD, DOCX) into a ChromaDB vector store
+- **Transcript Persistence** — Sessions saved to disk for later review
+- **Activity Log** — Frontend and backend event tracking with 24-hour retention
+- **Setup Wizard** — Guided first-launch experience that installs all prerequisites and configures the app
+- **Secure API Key Storage** — OpenAI API key stored in macOS Keychain (migrated from plaintext on upgrade)
+- **Native Audio Capture** — System audio via Core Audio Taps and mic via AVAudioEngine — no virtual audio drivers required
+- **WebSocket Auth** — Per-session bearer token, browser connection rejection
+
+## Security
+
+- **Signed app**: The app is signed with an Apple Developer ID.
+- **API key storage**: Stored in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Legacy plaintext keys in `settings.json` are migrated automatically and blanked.
+- **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`, `0600` permissions) on startup. Frontend sends it as `Authorization: Bearer <token>`. Connections with an `Origin` header (browsers) are rejected.
+- **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. `PythonManager` kills stale processes on port 8765 only after verifying they are Python/uv processes.
+- **Settings file**: `~/.listen/settings.json` is written with `0600` permissions.
 
 ## Data
 
 All persisted data lives under `~/.listen/`:
-
-| File | Purpose |
-|------|---------|
-| `settings.json` | Config (API keys, models, audio devices, thresholds) |
-| `activity.jsonl` | Activity log with 24-hour retention |
-| `chromadb/` | Vector store |
-| `transcripts/` | Saved transcript sessions |
-| `backend.pid` | Single-instance guard |
-| `ws_token` | Per-session WebSocket auth token (deleted on exit) |
-| `rag_queries.jsonl` | RAG query analytics |
-
-## Security
-
-- **Per-session WebSocket auth** — The backend generates a random 64-character token on startup, written to `~/.listen/ws_token` (owner-only permissions). The frontend reads this token and presents it on every WebSocket connection. Connections without a valid token are rejected.
-- **CSWSH protection** — WebSocket connections with an `Origin` header (i.e., from browsers) are rejected, preventing cross-origin WebSocket hijacking attacks from malicious web pages.
-- **Sanitized error responses** — Internal exception details are never sent to the frontend; only generic error messages are returned over the WebSocket.
-- **Process verification** — Stale process cleanup verifies the process is actually a Python/uv backend before terminating, preventing accidental kills of unrelated services on port 8765.
-
-## License
-
-This project is for personal use.
+- `settings.json` — config (models, audio devices, thresholds) — API key no longer stored here
+- `activity.jsonl` — activity log
+- `chromadb/` — vector store
+- `backend.pid` — single-instance guard
+- `backend.lock` — advisory file lock for single-instance enforcement
+- `ws_token` — per-session WebSocket auth token (deleted on exit)
+- `transcripts/` — saved transcript sessions
+- `rag_queries.jsonl` — RAG query analytics
