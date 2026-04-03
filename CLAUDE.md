@@ -1,6 +1,6 @@
 # LSTN2
 
-Real-time meeting co-pilot: macOS SwiftUI frontend + Python backend connected via WebSocket.
+Real-time meeting co-pilot: macOS SwiftUI frontend + Python backend connected via WebSocket. The app is signed and notarized by Apple.
 
 ## Commands
 

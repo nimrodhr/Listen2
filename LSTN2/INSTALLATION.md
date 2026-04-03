@@ -1,18 +1,30 @@
 # LSTN2 Installation Guide
 
-Step-by-step guide to install and set up LSTN2 on your Mac.
+Step-by-step guide to install and set up LSTN2 on your Mac. The app is signed and notarized by Apple.
 
 ## Prerequisites
 
 | Requirement | Why |
 |---|---|
 | **macOS 14.2+** (Sonoma or later) | System audio capture uses Core Audio Taps, available from macOS 14.2 |
-| **Xcode 16+** | Builds the Swift frontend |
 | **OpenAI API key** | Powers transcription, question detection, and RAG answers |
 
 > Python and uv are also required but the setup wizard installs them for you.
 
-## Step 1 — Clone and open in Xcode
+## Step 1 — Download and install
+
+Download the latest release from the [Releases](https://github.com/nimrodhr/Listen2/releases) page.
+
+The app is signed and notarized by Apple, so you can open it directly — no Gatekeeper warnings.
+
+1. Open the downloaded `.dmg` (or `.zip`)
+2. Drag **LSTN2** to your **Applications** folder
+3. Launch LSTN2 from Applications
+
+<details>
+<summary>Building from source (for developers)</summary>
+
+Requires Xcode 16+:
 
 ```bash
 git clone https://github.com/nimrodhr/Listen2.git
@@ -20,13 +32,15 @@ cd Listen2
 open LSTN2/LSTN2.xcodeproj
 ```
 
-## Step 2 — Build and run
+Press **Cmd+R** to build and run.
 
-Press **Cmd+R** in Xcode (or Product > Run). The app will build and launch.
+</details>
+
+## Step 2 — Setup wizard
 
 On first launch the setup wizard appears automatically.
 
-## Step 3 — Setup wizard: Environment
+## Step 3 — Environment
 
 The first screen installs three components:
 
@@ -44,7 +58,7 @@ A terminal output pane at the bottom shows real-time progress.
 
 Once all three components show green checkmarks and "Environment is ready" appears, click **Next**.
 
-## Step 4 — Setup wizard: API Key
+## Step 4 — API Key
 
 1. Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and create a new API key
 2. Paste the key into the secure input field (it starts with `sk-`)
@@ -63,7 +77,7 @@ Once the green "API key saved" confirmation appears, click **Next**.
 - **RAG answers** — GPT generates answers from your knowledge base
 - **Cost** — OpenAI charges per usage. You control spending via your OpenAI account dashboard
 
-## Step 5 — Setup wizard: Audio Config
+## Step 5 — Audio Config
 
 This is an informational screen. No action is required.
 

@@ -1,6 +1,6 @@
 # LSTN2
 
-A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base.
+A macOS meeting co-pilot that provides real-time transcription, question detection, and context-aware Q&A powered by OpenAI and a local knowledge base. Signed and notarized by Apple.
 
 ## Architecture
 
@@ -51,20 +51,30 @@ Located in `backend/`. Managed with [uv](https://docs.astral.sh/uv/).
 ## Requirements
 
 - macOS 14.2+ (Sonoma or later — required for Core Audio Taps)
-- Xcode 16+
 - OpenAI API key
 
 > **Note:** Python 3.11+ and [uv](https://docs.astral.sh/uv/) are required but are installed automatically by the setup wizard on first launch.
 
 ## Setup
 
+### Download (recommended)
+
+Download the latest release from the [Releases](https://github.com/nimrodhr/Listen2/releases) page. The app is signed and notarized by Apple — just drag it to Applications and launch.
+
+### Build from source
+
+Requires Xcode 16+:
+
 1. Clone the repo and open `LSTN2/LSTN2.xcodeproj` in Xcode
 2. Build & run (Cmd+R)
-3. On first launch, the **setup wizard** walks through three steps:
+
+### First launch
+
+On first launch, the **setup wizard** walks through three steps:
    - **Environment** — Installs uv, Python 3.13, and backend dependencies (with per-package transparency info)
    - **API Key** — Enter your OpenAI API key (stored securely in the macOS Keychain)
    - **Audio Config** — Informational screen; system audio is captured natively, no extra drivers needed
-4. The app auto-launches the backend and connects via WebSocket
+The app auto-launches the backend and connects via WebSocket.
 
 The wizard can be re-run from Settings at any time. Setup state is versioned — upgrading LSTN2 may re-trigger the wizard if steps have changed.
 
@@ -112,6 +122,7 @@ Run via Xcode (Cmd+U) or `xcodebuild test`.
 
 ## Security
 
+- **Apple notarized**: The app is signed with an Apple Developer certificate and notarized by Apple, ensuring it has been scanned for malware and is safe to run.
 - **API key storage**: Stored in the macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Legacy plaintext keys in `settings.json` are migrated automatically and blanked.
 - **WebSocket auth**: Backend generates a per-session token (`~/.listen/ws_token`, `0600` permissions) on startup. Frontend sends it as `Authorization: Bearer <token>`. Connections with an `Origin` header (browsers) are rejected.
 - **Single instance**: Backend uses PID file + `fcntl.flock` advisory lock + port check. `PythonManager` kills stale processes on port 8765 only after verifying they are Python/uv processes.
