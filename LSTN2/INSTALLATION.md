@@ -1,6 +1,6 @@
 # LSTN2 Installation Guide
 
-Step-by-step guide to install and set up LSTN2 on your Mac. The app is signed and notarized by Apple.
+Step-by-step guide to install and set up LSTN2 on your Mac.
 
 ## Prerequisites
 
@@ -11,12 +11,26 @@ Step-by-step guide to install and set up LSTN2 on your Mac. The app is signed an
 
 > Python and uv are also required but the setup wizard installs them for you.
 
-## Step 1 — Download and install
+## Step 1 — Install the App
 
-Download the latest `.app` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page.
+Download the latest `LSTN2.dmg` from the [Releases](https://github.com/nimrodhr/Listen2/releases) page.
 
-1. Move **LSTN2.app** to your **Applications** folder
-2. Launch LSTN2
+1. Open the **LSTN2.dmg** file. A Finder window will appear showing the LSTN2 app and an Applications folder shortcut.
+2. Drag **LSTN2.app** into the **Applications** folder.
+3. Eject the DMG (right-click the mounted volume on the desktop or sidebar and choose Eject).
+
+## Step 2 — Approve the App in macOS Security
+
+LSTN2 is not signed with an Apple Developer ID, so macOS will block it on first launch.
+
+1. Open **LSTN2** from your Applications folder. macOS will show a dialog saying the app "can't be opened because Apple cannot check it for malicious software."
+2. Click **Done** (or **OK**) to dismiss the dialog.
+3. Go to **System Settings > Privacy & Security**.
+4. Scroll down to the **Security** section. You'll see a message: *"LSTN2" was blocked from use because it is not from an identified developer.*
+5. Click **Open Anyway**.
+6. macOS will ask one more time — click **Open** to confirm.
+
+The app will now launch normally on all future opens.
 
 <details>
 <summary>Building from source (for developers)</summary>
@@ -33,11 +47,11 @@ Press **Cmd+R** to build and run.
 
 </details>
 
-## Step 2 — Setup wizard
+## Step 3 — Setup wizard
 
 On first launch the setup wizard appears automatically.
 
-## Step 3 — Environment
+## Step 4 — Environment
 
 The first screen installs three components:
 
@@ -55,7 +69,7 @@ A terminal output pane at the bottom shows real-time progress.
 
 Once all three components show green checkmarks and "Environment is ready" appears, click **Next**.
 
-## Step 4 — API Key
+## Step 5 — API Key
 
 1. Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and create a new API key
 2. Paste the key into the secure input field (it starts with `sk-`)
@@ -74,7 +88,7 @@ Once the green "API key saved" confirmation appears, click **Next**.
 - **RAG answers** — GPT generates answers from your knowledge base
 - **Cost** — OpenAI charges per usage. You control spending via your OpenAI account dashboard
 
-## Step 5 — Audio Config
+## Step 6 — Audio Config
 
 This is an informational screen. No action is required.
 
@@ -83,7 +97,7 @@ This is an informational screen. No action is required.
 
 Click **Finish** to complete the setup.
 
-## Step 6 — Grant permissions
+## Step 7 — Grant permissions
 
 When you click Finish, macOS may prompt you to grant **Screen & System Audio Recording** permission. This is required for system audio capture.
 
@@ -93,7 +107,7 @@ If the prompt does not appear automatically, go to:
 
 When you start your first recording, macOS will also prompt for **Microphone** access. Grant it.
 
-## Step 7 — Start using LSTN2
+## Step 8 — Start using LSTN2
 
 After the wizard completes, the main app window opens. The backend launches automatically and connects via WebSocket — you'll see a green connection badge when ready.
 
